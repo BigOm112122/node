@@ -2,16 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef V8_COMPILER_WASM_COMPILER_DEFINITIONS_H_
+#define V8_COMPILER_WASM_COMPILER_DEFINITIONS_H_
+
 #if !V8_ENABLE_WEBASSEMBLY
 #error This header should only be included if WebAssembly is enabled.
 #endif  // !V8_ENABLE_WEBASSEMBLY
 
-#ifndef V8_COMPILER_WASM_COMPILER_DEFINITIONS_H_
-#define V8_COMPILER_WASM_COMPILER_DEFINITIONS_H_
-
 #include <ostream>
 
-#include "src/base/functional.h"
+#include "src/base/hashing.h"
 #include "src/base/vector.h"
 #include "src/codegen/linkage-location.h"
 #include "src/codegen/register.h"
@@ -32,6 +32,12 @@ struct ModuleWireBytes;
 namespace compiler {
 class CallDescriptor;
 
+enum SubtypeCheckExactness : uint8_t {
+  kMayBeSubtype,
+  kExactMatchOnly,
+  kExactMatchLastSupertype,
+};
+
 // If {to} is nullable, it means that null passes the check.
 // {from} may change in compiler optimization passes as the object's type gets
 // narrowed.
@@ -39,6 +45,7 @@ class CallDescriptor;
 struct WasmTypeCheckConfig {
   wasm::ValueType from;
   const wasm::ValueType to;
+  SubtypeCheckExactness exactness{kMayBeSubtype};
 };
 
 V8_INLINE std::ostream& operator<<(std::ostream& os,
@@ -87,11 +94,23 @@ base::Vector<const char> GetDebugName(Zone* zone,
                                       const wasm::WasmModule* module,
                                       const wasm::WireBytesStorage* wire_bytes,
                                       int index);
-enum WasmCallKind { kWasmFunction, kWasmImportWrapper, kWasmCapiFunction };
+enum WasmCallKind {
+  kWasmFunction,
+  kWasmIndirectFunction,
+  kWasmImportWrapper,
+  kWasmCapiFunction,
+  kWasmContinuation
+};
 
-V8_EXPORT_PRIVATE CallDescriptor* GetWasmCallDescriptor(
-    Zone* zone, const wasm::FunctionSig* signature,
-    WasmCallKind kind = kWasmFunction, bool need_frame_state = false);
+template <typename T>
+CallDescriptor* GetWasmCallDescriptor(Zone* zone, const Signature<T>* signature,
+                                      WasmCallKind kind = kWasmFunction,
+                                      bool need_frame_state = false);
+
+extern template EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
+    CallDescriptor* GetWasmCallDescriptor(Zone*,
+                                          const Signature<wasm::ValueType>*,
+                                          WasmCallKind, bool);
 
 template <typename T>
 LocationSignature* BuildLocations(Zone* zone, const Signature<T>* sig,

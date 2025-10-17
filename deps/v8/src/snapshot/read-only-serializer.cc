@@ -4,8 +4,10 @@
 
 #include "src/snapshot/read-only-serializer.h"
 
+#include "src/common/globals.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/read-only-heap.h"
+#include "src/heap/visit-object.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
 #include "src/snapshot/read-only-serializer-deserializer.h"
@@ -23,14 +25,16 @@ class ObjectPreProcessor final {
 
 #define PRE_PROCESS_TYPE_LIST(V) \
   V(AccessorInfo)                \
+  V(InterceptorInfo)             \
+  V(JSExternalObject)            \
   V(FunctionTemplateInfo)        \
   V(Code)
 
   void PreProcessIfNeeded(Tagged<HeapObject> o) {
     const InstanceType itype = o->map(isolate_)->instance_type();
-#define V(TYPE)                               \
-  if (InstanceTypeChecker::Is##TYPE(itype)) { \
-    return PreProcess##TYPE(Cast<TYPE>(o));   \
+#define V(TYPE)                                    \
+  if (InstanceTypeChecker::Is##TYPE(itype)) {      \
+    return PreProcess##TYPE(TrustedCast<TYPE>(o)); \
   }
     PRE_PROCESS_TYPE_LIST(V)
 #undef V
@@ -68,6 +72,24 @@ class ObjectPreProcessor final {
     EncodeExternalPointerSlot(o->RawExternalPointerField(
         AccessorInfo::kSetterOffset, kAccessorInfoSetterTag));
   }
+  void PreProcessInterceptorInfo(Tagged<InterceptorInfo> o) {
+    const bool is_named = o->is_named();
+
+#define PROCESS_FIELD(Name, name)                       \
+  EncodeExternalPointerSlot(o->RawExternalPointerField( \
+      InterceptorInfo::k##Name##Offset,                 \
+      is_named ? kApiNamedProperty##Name##CallbackTag   \
+               : kApiIndexedProperty##Name##CallbackTag));
+
+    INTERCEPTOR_INFO_CALLBACK_LIST(PROCESS_FIELD)
+#undef PROCESS_FIELD
+  }
+  void PreProcessJSExternalObject(Tagged<JSExternalObject> o) {
+    EncodeExternalPointerSlot(
+        o->RawExternalPointerField(JSExternalObject::kValueOffset,
+                                   kExternalObjectValueTag),
+        reinterpret_cast<Address>(o->value(isolate_)));
+  }
   void PreProcessFunctionTemplateInfo(Tagged<FunctionTemplateInfo> o) {
     EncodeExternalPointerSlot(
         o->RawExternalPointerField(
@@ -75,10 +97,35 @@ class ObjectPreProcessor final {
             kFunctionTemplateInfoCallbackTag),
         o->callback(isolate_));  // Pass the non-redirected value.
   }
+#if V8_ENABLE_GEARBOX
+  V8_INLINE void ResetGearboxPlaceholderBuiltin(Tagged<Code> code) {
+    // In order to ensure predictable state of placeholder builtins Code
+    // objects after serialization we replace their fields with the contents
+    // of kIllegal builtin.
+    if (code->is_gearbox_placeholder_builtin()) {
+      Builtin variant_builtin_id = code->builtin_id();
+      Builtin placeholder_builtin_id =
+          Builtins::GetGearboxPlaceholderFromVariant(variant_builtin_id);
+      DCHECK_EQ(
+          isolate_->builtins()->code(placeholder_builtin_id)->builtin_id(),
+          code->builtin_id());
+      Tagged<Code> src = isolate_->builtins()->code(Builtin::kIllegal);
+      Code::CopyFieldsWithGearboxForSerialization(code, src, isolate_);
+      // We should use the placeholder id instead of kIllegal.
+      code->set_builtin_id(placeholder_builtin_id);
+    }
+  }
+#endif
   void PreProcessCode(Tagged<Code> o) {
     o->ClearInstructionStartForSerialization(isolate_);
-    DCHECK(!o->has_source_position_table_or_bytecode_offset_table());
-    DCHECK(!o->has_deoptimization_data_or_interpreter_data());
+    CHECK(!o->has_source_position_table_or_bytecode_offset_table());
+    CHECK(!o->has_deoptimization_data_or_interpreter_data());
+#ifdef V8_ENABLE_LEAPTIERING
+    CHECK_EQ(o->js_dispatch_handle(), kNullJSDispatchHandle);
+#endif
+#if V8_ENABLE_GEARBOX
+    ResetGearboxPlaceholderBuiltin(o);
+#endif
   }
 
   Isolate* const isolate_;
@@ -207,7 +254,7 @@ class EncodeRelocationsVisitor final : public ObjectVisitor {
     ExternalPointerSlot slot_in_segment{
         reinterpret_cast<Address>(segment_->contents.get() +
                                   SegmentOffsetOf(slot)),
-        slot.tag()};
+        slot.exact_tag()};
     // Constructing no_gc here is not the intended use pattern (instead we
     // should pass it along the entire callchain); but there's little point of
     // doing that here - all of the code in this file relies on GC being
@@ -269,7 +316,7 @@ void ReadOnlySegmentForSerialization::EncodeTaggedSlots(Isolate* isolate) {
                                 SkipFreeSpaceOrFiller::kNo);
   for (Tagged<HeapObject> o = it.Next(); !o.is_null(); o = it.Next()) {
     if (o.address() >= segment_end) break;
-    o->Iterate(cage_base, &v);
+    VisitObject(isolate, o, &v);
   }
 }
 
@@ -399,7 +446,7 @@ class ReadOnlyHeapImageSerializer {
 
 std::vector<ReadOnlyHeapImageSerializer::MemoryRegion> GetUnmappedRegions(
     Isolate* isolate) {
-#ifdef V8_STATIC_ROOTS
+#if defined(V8_STATIC_ROOTS) && defined(V8_ENABLE_WEBASSEMBLY)
   // WasmNull's payload is aligned to the OS page and consists of
   // WasmNull::kPayloadSize bytes of unmapped memory. To avoid inflating the
   // snapshot size and accessing uninitialized and/or unmapped memory, the
@@ -409,7 +456,7 @@ std::vector<ReadOnlyHeapImageSerializer::MemoryRegion> GetUnmappedRegions(
   Tagged<HeapObject> wasm_null_padding = ro_roots.wasm_null_padding();
   CHECK(IsFreeSpace(wasm_null_padding));
   Address wasm_null_padding_start =
-      wasm_null_padding.address() + FreeSpace::kHeaderSize;
+      wasm_null_padding.address() + sizeof(FreeSpace);
   std::vector<ReadOnlyHeapImageSerializer::MemoryRegion> unmapped;
   if (wasm_null.address() > wasm_null_padding_start) {
     unmapped.push_back({wasm_null_padding_start,
@@ -419,7 +466,7 @@ std::vector<ReadOnlyHeapImageSerializer::MemoryRegion> GetUnmappedRegions(
   return unmapped;
 #else
   return {};
-#endif  // V8_STATIC_ROOTS
+#endif  // V8_STATIC_ROOTS && V8_ENABLE_WEBASSEMBLY
 }
 
 }  // namespace

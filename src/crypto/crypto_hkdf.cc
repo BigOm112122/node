@@ -9,6 +9,7 @@
 
 namespace node {
 
+using ncrypto::Digest;
 using v8::FunctionCallbackInfo;
 using v8::JustVoid;
 using v8::Maybe;
@@ -54,9 +55,9 @@ Maybe<void> HKDFTraits::AdditionalConfig(
   CHECK(args[offset + 4]->IsUint32());  // Length
 
   Utf8Value hash(env->isolate(), args[offset]);
-  params->digest = ncrypto::getDigestByName(hash.ToStringView());
-  if (params->digest == nullptr) [[unlikely]] {
-    THROW_ERR_CRYPTO_INVALID_DIGEST(env, "Invalid digest: %s", *hash);
+  params->digest = Digest::FromName(*hash);
+  if (!params->digest) [[unlikely]] {
+    THROW_ERR_CRYPTO_INVALID_DIGEST(env, "Invalid digest: %s", hash);
     return Nothing<void>();
   }
 
@@ -96,10 +97,10 @@ Maybe<void> HKDFTraits::AdditionalConfig(
   return JustVoid();
 }
 
-bool HKDFTraits::DeriveBits(
-    Environment* env,
-    const HKDFConfig& params,
-    ByteSource* out) {
+bool HKDFTraits::DeriveBits(Environment* env,
+                            const HKDFConfig& params,
+                            ByteSource* out,
+                            CryptoJobMode mode) {
   auto dp = ncrypto::hkdf(params.digest,
                           ncrypto::Buffer<const unsigned char>{
                               .data = reinterpret_cast<const unsigned char*>(
@@ -117,6 +118,7 @@ bool HKDFTraits::DeriveBits(
                           params.length);
   if (!dp) return false;
 
+  DCHECK(!dp.isSecure());
   *out = ByteSource::Allocated(dp.release());
   return true;
 }

@@ -36,11 +36,12 @@ The current security stewards are documented in the main Node.js
 | NodeSource   | Rafael          | 2024-Apr-10  |
 | NodeSource   | Rafael          | 2024-Jul-08  |
 | NodeSource   | Rafael          | 2025-Jan-21  |
+| NodeSource   | Rafael          | 2025-May-14  |
+| NodeSource   | Rafael          | 2025-July-15 |
 | Datadog      | Bryan           |              |
 | IBM          | Joe             |              |
 | Platformatic | Matteo          |              |
 | NodeSource   | Juan            |              |
-| Red Hat      | Michael         |              |
 
 ## Planning
 
@@ -81,6 +82,7 @@ The current security stewards are documented in the main Node.js
 * [ ] 6\. **Get release volunteers:**
   * Get volunteers for the upcoming security release on the affected release
     lines.
+  * Make sure to sync nodejs-private (vN.x) branches with nodejs/node.
 
 * [ ] 7\. **Preparing Pre and Post Release Blog Posts:**
   * [ ] Create a pre-release blog post using `git node security --pre-release`.

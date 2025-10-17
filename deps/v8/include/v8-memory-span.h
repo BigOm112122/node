@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <cstddef>
 #include <iterator>
 #include <type_traits>
 
@@ -86,15 +87,20 @@ class V8_EXPORT MemorySpan {
   static constexpr bool is_compatible_iterator_v =
       is_compatible_iterator<It>::value;
 
+  // SFINAE-compatible wrapper for `std::to_address()`.
+  // Adapted from "base/types/to_address.h" in chromium.
   template <typename U>
+    requires(!std::is_function_v<U>)
   [[nodiscard]] static constexpr U* to_address(U* p) noexcept {
     return p;
   }
 
-  template <typename It,
-            typename = std::void_t<decltype(std::declval<It&>().operator->())>>
-  [[nodiscard]] static constexpr auto to_address(It it) noexcept {
-    return it.operator->();
+  template <typename It>
+    requires(
+        requires(const It& it) { std::pointer_traits<It>::to_address(it); } ||
+        requires(const It& it) { it.operator->(); })
+  [[nodiscard]] static constexpr auto to_address(const It& it) noexcept {
+    return std::to_address(it);
   }
 
  public:
@@ -229,7 +235,7 @@ class V8_EXPORT MemorySpan {
 
     constexpr Iterator& operator+=(difference_type rhs) {
       ptr_ += rhs;
-      return this;
+      return *this;
     }
 
     [[nodiscard]] friend constexpr Iterator operator+(Iterator lhs,
@@ -245,7 +251,7 @@ class V8_EXPORT MemorySpan {
 
     constexpr Iterator& operator-=(difference_type rhs) {
       ptr_ -= rhs;
-      return this;
+      return *this;
     }
 
     [[nodiscard]] friend constexpr Iterator operator-(Iterator lhs,

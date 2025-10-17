@@ -6,7 +6,7 @@
 #include "src/wasm/compilation-environment-inl.h"
 #include "src/wasm/wasm-debug.h"
 #include "test/cctest/cctest.h"
-#include "test/cctest/wasm/wasm-run-utils.h"
+#include "test/cctest/wasm/wasm-runner.h"
 #include "test/common/wasm/test-signatures.h"
 #include "test/common/wasm/wasm-macro-gen.h"
 
@@ -22,7 +22,8 @@ class LiftoffCompileEnvironment {
       : isolate_(CcTest::InitIsolateOnce()),
         handle_scope_(isolate_),
         zone_(isolate_->allocator(), ZONE_NAME),
-        wasm_runner_(nullptr, kWasmOrigin, TestExecutionTier::kLiftoff, 0) {
+        wasm_runner_(nullptr, kWasmOrigin, TestExecutionTier::kLiftoff, 0,
+                     isolate_) {
     // Add a table of length 1, for indirect calls.
     wasm_runner_.builder().AddIndirectFunctionTable(nullptr, 1);
     // Set tiered down such that we generate debugging code.
@@ -151,7 +152,7 @@ class LiftoffCompileEnvironment {
                                               function->code.end_offset());
 
     bool is_shared =
-        native_module->module()->types[function->sig_index].is_shared;
+        native_module->module()->type(function->sig_index).is_shared;
     FunctionBody body{sig, 0, function_wire_bytes.begin(),
                       function_wire_bytes.end(), is_shared};
     return {code, body};
@@ -442,7 +443,7 @@ TEST(Liftoff_debug_side_table_catch_all) {
   LiftoffCompileEnvironment env;
   TestSignatures sigs;
   int ex = env.builder()->AddException(sigs.v_v());
-  ValueType exception_type = ValueType::Ref(HeapType::kAny);
+  ValueType exception_type = kWasmAnyRef.AsNonNull();
   auto debug_side_table = env.GenerateDebugSideTable(
       {}, {kWasmI32},
       {WASM_TRY_CATCH_ALL_T(kWasmI32, WASM_STMTS(WASM_I32V(0), WASM_THROW(ex)),
@@ -466,7 +467,7 @@ TEST(Liftoff_debug_side_table_catch_all) {
 
 TEST(Regress1199526) {
   LiftoffCompileEnvironment env;
-  ValueType exception_type = ValueType::Ref(HeapType::kAny);
+  ValueType exception_type = kWasmAnyRef.AsNonNull();
   auto debug_side_table = env.GenerateDebugSideTable(
       {}, {},
       {kExprTry, kVoidCode, kExprCallFunction, 0, kExprCatchAll, kExprLoop,

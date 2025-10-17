@@ -2,7 +2,14 @@
 
 <!-- YAML
 changes:
-  - version: v23.6.0
+  - version:
+     - v24.3.0
+     - v22.18.0
+    pr-url: https://github.com/nodejs/node/pull/58643
+    description: Type stripping no longer emits an experimental warning.
+  - version:
+     - v23.6.0
+     - v22.18.0
     pr-url: https://github.com/nodejs/node/pull/56350
     description: Type stripping is enabled by default.
   - version: v22.7.0
@@ -12,7 +19,7 @@ changes:
 
 <!--introduced_in=v22.6.0-->
 
-> Stability: 1.1 - Active development
+> Stability: 1.2 - Release candidate
 
 ## Enabling
 
@@ -55,8 +62,6 @@ To use TypeScript with full support for all TypeScript features, including
 added: v22.6.0
 -->
 
-> Stability: 1.1 - Active development
-
 By default Node.js will execute TypeScript files that contains only
 erasable TypeScript syntax.
 Node.js will replace TypeScript syntax with whitespace,
@@ -91,9 +96,9 @@ but we recommend version 5.8 or newer with the following `tsconfig.json` setting
 }
 ```
 
-> \[!NOTE]
-> Use the `noEmit` option if you intend to only execute `*.ts` files, for example a build script.
-> You won't need this flag if you intend to distribute `*.js` files.
+Use the `noEmit` option if you intend to only execute `*.ts` files, for example
+a build script. You won't need this flag if you intend to distribute `*.js`
+files.
 
 ### Determining module system
 
@@ -201,8 +206,8 @@ are enabled by default.
 ### Type stripping in dependencies
 
 To discourage package authors from publishing packages written in TypeScript,
-Node.js will by default refuse to handle TypeScript files inside folders under
-a `node_modules` path.
+Node.js refuses to handle TypeScript files inside folders under a `node_modules`
+path.
 
 ### Paths aliases
 

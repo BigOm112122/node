@@ -111,6 +111,9 @@ The key you use may be a child/subkey of an existing key.
 Additionally, full GPG key fingerprints for individuals authorized to release
 should be listed in the Node.js GitHub README.md file.
 
+> It is recommended to sign all commits under the Node.js repository.
+> Run: `git config commit.gpgsign true` inside the `node` folder.
+
 ## How to create a release
 
 Notes:
@@ -732,14 +735,33 @@ the build before moving forward. Use the following list as a baseline:
 ### 11. Tag and sign the release commit
 
 Once you have produced builds that you're happy with you can either run
-`git node release --promote`
+`git node release --promote`:
 
 ```bash
-git node release -S --promote https://github.com/nodejs/node/pull/XXXX
+git node release --promote https://github.com/nodejs/node/pull/XXXX -S
 ```
 
 to automate the remaining steps until step 16 or you can perform it manually
 following the below steps.
+
+<details>
+<summary>Security release</summary>
+
+For security releases, NCU should be configured to target the public repository,
+not the private one where the proposal are hosted. Pass the upstream where to
+fetch the proposal from using the `--fetch-from` flag.
+
+When promoting several releases, you can pass multiple URLs:
+
+```bash
+git node release --promote \
+  --fetch-from git@github.com:nodejs-private/node-private.git \
+  https://github.com/nodejs-private/node-private/pull/XXXX \
+  https://github.com/nodejs-private/node-private/pull/XXXX \
+  -S
+```
+
+</details>
 
 ***
 
@@ -1398,9 +1420,9 @@ The commits in the generated changelog must then be organized:
 * Separate all SEMVER-MAJOR, SEMVER-MINOR, and SEMVER-PATCH commits into lists
 
 ```console
-$ branch-diff upstream/vN-1.x upstream/vN.x --require-label=semver-major --group --filter-release  # get all majors
-$ branch-diff upstream/vN-1.x upstream/vN.x --require-label=semver-minor --group --filter-release  # get all minors
-$ branch-diff upstream/vN-1.x upstream/vN.x --exclude-label=semver-major,semver-minor --group --filter-release  # get all patches
+$ branch-diff upstream/vN-1.x upstream/vN.x --require-label=semver-major --group --filter-release --markdown # get all majors
+$ branch-diff upstream/vN-1.x upstream/vN.x --require-label=semver-minor --group --filter-release --markdown # get all minors
+$ branch-diff upstream/vN-1.x upstream/vN.x --exclude-label=semver-major,semver-minor --group --filter-release --markdown # get all patches
 ```
 
 #### Generate the notable changes

@@ -258,9 +258,11 @@ void InstructionScheduler::Schedule() {
 int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
   switch (instr->arch_opcode()) {
     case kArchNop:
+    case kArchPause:
     case kArchStackCheckOffset:
     case kArchFramePointer:
     case kArchParentFramePointer:
+    case kArchRootPointer:
     case kArchStackSlot:  // Despite its name this opcode will produce a
                           // reference to a frame slot, so it is not affected
                           // by the arm64 dual stack issues mentioned below.
@@ -270,7 +272,6 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
     case kArchBinarySearchSwitch:
     case kArchRet:
     case kArchTableSwitch:
-    case kArchThrowTerminator:
       return kNoOpcodeFlags;
 
     case kArchTruncateDoubleToI:
@@ -317,6 +318,7 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
     case kArchTailCallAddress:
 #if V8_ENABLE_WEBASSEMBLY
     case kArchTailCallWasm:
+    case kArchTailCallWasmIndirect:
 #endif  // V8_ENABLE_WEBASSEMBLY
     case kArchAbortCSADcheck:
       return kHasSideEffect;
@@ -329,11 +331,12 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
       return kIsBarrier;
 
     case kArchCallCFunction:
-    case kArchCallCFunctionWithFrameState:
     case kArchCallCodeObject:
     case kArchCallJSFunction:
 #if V8_ENABLE_WEBASSEMBLY
     case kArchCallWasmFunction:
+    case kArchCallWasmFunctionIndirect:
+    case kArchResumeWasmContinuation:
 #endif  // V8_ENABLE_WEBASSEMBLY
     case kArchCallBuiltinPointer:
       // Calls can cause GC and GC may relocate objects. If a pure instruction
@@ -364,11 +367,13 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
     case kAtomicExchangeInt16:
     case kAtomicExchangeUint16:
     case kAtomicExchangeWord32:
+    case kAtomicExchangeWithWriteBarrier:
     case kAtomicCompareExchangeInt8:
     case kAtomicCompareExchangeUint8:
     case kAtomicCompareExchangeInt16:
     case kAtomicCompareExchangeUint16:
     case kAtomicCompareExchangeWord32:
+    case kAtomicCompareExchangeWithWriteBarrier:
     case kAtomicAddInt8:
     case kAtomicAddUint8:
     case kAtomicAddInt16:

@@ -67,8 +67,6 @@ Reduction WasmGCLowering::Reduce(Node* node) {
       return ReduceIsNotNull(node);
     case IrOpcode::kRttCanon:
       return ReduceRttCanon(node);
-    case IrOpcode::kTypeGuard:
-      return ReduceTypeGuard(node);
     case IrOpcode::kWasmAnyConvertExtern:
       return ReduceWasmAnyConvertExtern(node);
     case IrOpcode::kWasmExternConvertAny:
@@ -95,24 +93,17 @@ Reduction WasmGCLowering::Reduce(Node* node) {
 }
 
 Node* WasmGCLowering::Null(wasm::ValueType type) {
-  // TODO(thibaudm): Can we use wasm null for exnref?
-  RootIndex index = wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_) ||
-                            wasm::IsSubtypeOf(type, wasm::kWasmExnRef, module_)
-                        ? RootIndex::kNullValue
-                        : RootIndex::kWasmNull;
+  RootIndex index =
+      type.use_wasm_null() ? RootIndex::kWasmNull : RootIndex::kNullValue;
   return gasm_.LoadImmutable(MachineType::Pointer(), gasm_.LoadRootRegister(),
                              IsolateData::root_slot_offset(index));
 }
 
 Node* WasmGCLowering::IsNull(Node* object, wasm::ValueType type) {
 #if V8_STATIC_ROOTS_BOOL
-  // TODO(14616): Extend this for shared types.
-  const bool is_wasm_null =
-      !wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_) &&
-      !wasm::IsSubtypeOf(type, wasm::kWasmExnRef, module_);
-  Node* null_value =
-      gasm_.UintPtrConstant(is_wasm_null ? StaticReadOnlyRoot::kWasmNull
-                                         : StaticReadOnlyRoot::kNullValue);
+  Node* null_value = gasm_.UintPtrConstant(
+      type.use_wasm_null() ? StaticReadOnlyRoot::kWasmNull
+                           : StaticReadOnlyRoot::kNullValue);
 #else
   Node* null_value = Null(type);
 #endif
@@ -155,7 +146,10 @@ Reduction WasmGCLowering::ReduceWasmTypeCheck(Node* node) {
 
   Node* map = gasm_.LoadMap(object);
 
-  if (module_->types[config.to.ref_index()].is_final) {
+  DCHECK_IMPLIES(module_->type(config.to.ref_index()).is_final,
+                 config.exactness == kExactMatchOnly);
+
+  if (config.exactness == kExactMatchOnly) {
     gasm_.Goto(&end_label, gasm_.TaggedEqual(map, rtt));
   } else {
     // First, check if types happen to be equal. This has been shown to give
@@ -324,7 +318,10 @@ Reduction WasmGCLowering::ReduceWasmTypeCast(Node* node) {
 
   Node* map = gasm_.LoadMap(object);
 
-  if (module_->types[config.to.ref_index()].is_final) {
+  DCHECK_IMPLIES(module_->type(config.to.ref_index()).is_final,
+                 config.exactness == kExactMatchOnly);
+
+  if (config.exactness == kExactMatchOnly) {
     gasm_.TrapUnless(gasm_.TaggedEqual(map, rtt), TrapId::kTrapIllegalCast);
     UpdateSourcePosition(gasm_.effect(), node);
     gasm_.Goto(&end_label);
@@ -488,8 +485,7 @@ Reduction WasmGCLowering::ReduceAssertNotNull(Node* node) {
       if (null_check_strategy_ == NullCheckStrategy::kExplicit ||
           wasm::IsSubtypeOf(wasm::kWasmI31Ref.AsNonNull(), op_parameter.type,
                             module_) ||
-          wasm::IsSubtypeOf(op_parameter.type, wasm::kWasmExternRef, module_) ||
-          wasm::IsSubtypeOf(op_parameter.type, wasm::kWasmExnRef, module_)) {
+          !op_parameter.type.use_wasm_null()) {
         gasm_.TrapIf(IsNull(object, op_parameter.type), op_parameter.trap_id);
         UpdateSourcePosition(gasm_.effect(), node);
       } else {
@@ -543,14 +539,6 @@ Reduction WasmGCLowering::ReduceRttCanon(Node* node) {
   return Replace(gasm_.LoadImmutable(
       MachineType::TaggedPointer(), maps_list,
       wasm::ObjectAccess::ElementOffsetInTaggedFixedArray(type_index)));
-}
-
-Reduction WasmGCLowering::ReduceTypeGuard(Node* node) {
-  DCHECK_EQ(node->opcode(), IrOpcode::kTypeGuard);
-  Node* alias = NodeProperties::GetValueInput(node, 0);
-  ReplaceWithValue(node, alias);
-  node->Kill();
-  return Replace(alias);
 }
 
 namespace {

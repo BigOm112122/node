@@ -9,6 +9,7 @@
 
 namespace node {
 
+using ncrypto::Digest;
 using v8::FunctionCallbackInfo;
 using v8::Int32;
 using v8::JustVoid;
@@ -100,9 +101,9 @@ Maybe<void> PBKDF2Traits::AdditionalConfig(
   }
 
   Utf8Value name(args.GetIsolate(), args[offset + 4]);
-  params->digest = ncrypto::getDigestByName(name.ToStringView());
-  if (params->digest == nullptr) [[unlikely]] {
-    THROW_ERR_CRYPTO_INVALID_DIGEST(env, "Invalid digest: %s", *name);
+  params->digest = Digest::FromName(*name);
+  if (!params->digest) [[unlikely]] {
+    THROW_ERR_CRYPTO_INVALID_DIGEST(env, "Invalid digest: %s", name);
     return Nothing<void>();
   }
 
@@ -111,7 +112,8 @@ Maybe<void> PBKDF2Traits::AdditionalConfig(
 
 bool PBKDF2Traits::DeriveBits(Environment* env,
                               const PBKDF2Config& params,
-                              ByteSource* out) {
+                              ByteSource* out,
+                              CryptoJobMode mode) {
   // Both pass and salt may be zero length here.
   auto dp = ncrypto::pbkdf2(params.digest,
                             ncrypto::Buffer<const char>{
@@ -126,6 +128,7 @@ bool PBKDF2Traits::DeriveBits(Environment* env,
                             params.length);
 
   if (!dp) return false;
+  DCHECK(!dp.isSecure());
   *out = ByteSource::Allocated(dp.release());
   return true;
 }

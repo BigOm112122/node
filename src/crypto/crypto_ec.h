@@ -15,7 +15,6 @@
 
 namespace node {
 namespace crypto {
-int GetCurveFromName(const char* name);
 
 class ECDH final : public BaseObject {
  public:
@@ -78,10 +77,10 @@ struct ECDHBitsTraits final {
       unsigned int offset,
       ECDHBitsConfig* params);
 
-  static bool DeriveBits(
-      Environment* env,
-      const ECDHBitsConfig& params,
-      ByteSource* out_);
+  static bool DeriveBits(Environment* env,
+                         const ECDHBitsConfig& params,
+                         ByteSource* out_,
+                         CryptoJobMode mode);
 
   static v8::MaybeLocal<v8::Value> EncodeOutput(Environment* env,
                                                 const ECDHBitsConfig& params,
