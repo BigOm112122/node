@@ -11,6 +11,7 @@
 
 #include "src/base/logging.h"
 #include "src/base/platform/mutex.h"
+#include "src/base/string-format.h"
 #include "src/builtins/builtins.h"
 #include "src/codegen/bailout-reason.h"
 #include "src/codegen/machine-type.h"
@@ -93,7 +94,8 @@ void ValidateOpInputRep(
       std::cerr << "Input has results " << PrintCollection(input_reps)
                 << ", but expected at least " << (*projection_index + 1)
                 << " results.\n";
-      UNREACHABLE();
+      FATAL("Wrong input arity in a %s: not enough inputs.\n",
+            OpcodeName(input_op.opcode));
     }
   } else if (input_reps.size() == 1) {
     input_rep = input_reps[0];
@@ -106,7 +108,8 @@ void ValidateOpInputRep(
               << " with wrong arity.\n";
     std::cerr << "Expected a single output but found " << input_reps.size()
               << ".\n";
-    UNREACHABLE();
+    FATAL("Wrong input arity in a %s: too many inputs.\n",
+          OpcodeName(input_op.opcode));
   }
   for (RegisterRepresentation expected_rep : expected_reps) {
     if (input_rep.AllowImplicitRepresentationChangeTo(
@@ -124,7 +127,7 @@ void ValidateOpInputRep(
             << PrintCollection(expected_reps).WithoutBrackets() << " but found "
             << input_rep << ".\n";
   std::cout << "Input: " << graph.Get(input) << "\n";
-  UNREACHABLE();
+  FATAL("Wrong input representation in a %s.\n", OpcodeName(input_op.opcode));
 }
 
 void ValidateOpInputRep(const Graph& graph, OpIndex input,
@@ -567,21 +570,24 @@ void ConstantOp::PrintOptions(std::ostream& os) const {
       os << "external: " << external_reference();
       break;
     case Kind::kHeapObject:
-      os << "heap object: " << JSONEscaped(handle());
+      os << "heap object: " << base::JSONEscaped(handle());
       break;
     case Kind::kCompressedHeapObject:
-      os << "compressed heap object: " << JSONEscaped(handle());
+      os << "compressed heap object: " << base::JSONEscaped(handle());
       break;
     case Kind::kTrustedHeapObject:
-      os << "trusted heap object: " << JSONEscaped(handle());
+      os << "trusted heap object: " << base::JSONEscaped(handle());
       break;
     case Kind::kRelocatableWasmCall:
-      os << "relocatable wasm call: 0x"
-         << reinterpret_cast<void*>(storage.integral);
+      os << "relocatable wasm call: 0x" << std::hex << storage.integral
+         << std::dec;
       break;
     case Kind::kRelocatableWasmStubCall:
-      os << "relocatable wasm stub call: 0x"
-         << reinterpret_cast<void*>(storage.integral);
+      os << "relocatable wasm stub call: "
+         << (Builtins::IsBuiltinId(static_cast<int>(storage.integral))
+                 ? Builtins::name(Builtin(storage.integral))
+                 : "<not a builtin>")
+         << " (0x" << std::hex << storage.integral << std::dec << ")";
       break;
     case Kind::kRelocatableWasmCanonicalSignatureId:
       os << "relocatable wasm canonical signature ID: "
@@ -890,6 +896,15 @@ void CallOp::Validate(const Graph& graph) const {
   // "ifndef GOOGLE3" check), which requires linking the dynamically generated
   // builtins-effects.cc in the final v8 binary.
 #ifndef GOOGLE3
+#if V8_ENABLE_WEBASSEMBLY
+  if (const ConstantOp* target_ptr_cst =
+          graph.Get(callee()).TryCast<Opmask::kWasmStubCallConstant>()) {
+    uint64_t target_val = target_ptr_cst->integral();
+    DCHECK_LE(target_val, Builtins::kBuiltinCount);
+    CHECK_IMPLIES(!callee_effects.can_allocate,
+                  !BuiltinCanAllocate(static_cast<Builtin>(target_val)));
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
   if (!graph.has_broker()) return;
   if (const ConstantOp* target =
           graph.Get(callee()).TryCast<Opmask::kHeapConstant>()) {
@@ -899,8 +914,8 @@ void CallOp::Validate(const Graph& graph) const {
                     !BuiltinCanAllocate(*builtin));
     }
   }
-#endif
-#endif
+#endif  // GOOGLE3
+#endif  // DEBUG
 }
 
 void DidntThrowOp::Validate(const Graph& graph) const {
@@ -1107,7 +1122,24 @@ std::ostream& operator<<(std::ostream& os, BlockIndex b) {
 }
 
 std::ostream& operator<<(std::ostream& os, const Block* b) {
-  return os << b->index();
+  if (b == nullptr) {
+    os << "nullptr";
+  } else {
+    os << b->index();
+  }
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, EffectHandler h) {
+  return os << h.block;
+}
+
+std::ostream& operator<<(std::ostream& os, base::Vector<EffectHandler> hs) {
+  os << "effect handlers: ";
+  for (auto& h : hs) {
+    os << h.tag_index << ":" << h.block << (&h == &hs.last() ? "" : " ");
+  }
+  return os;
 }
 
 std::ostream& operator<<(std::ostream& os, OpEffects effects) {
@@ -1224,12 +1256,12 @@ std::ostream& operator<<(std::ostream& os, NumericKind kind) {
   switch (kind) {
     case NumericKind::kFloat64Hole:
       return os << "Float64Hole";
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
     case NumericKind::kFloat64Undefined:
       return os << "Float64Undefined";
     case NumericKind::kFloat64UndefinedOrHole:
       return os << "Float64UndefinedOrHole";
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
     case NumericKind::kFinite:
       return os << "Finite";
     case NumericKind::kInteger:
@@ -1345,10 +1377,10 @@ std::ostream& operator<<(std::ostream& os,
       return os << "Bit";
     case ConvertJSPrimitiveToUntaggedOp::UntaggedKind::kFloat64:
       return os << "Float64";
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
     case ConvertJSPrimitiveToUntaggedOp::UntaggedKind::kHoleyFloat64:
       return os << "HoleyFloat64";
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
   }
 }
 
@@ -1382,10 +1414,10 @@ std::ostream& operator<<(
       return os << "Int64";
     case ConvertJSPrimitiveToUntaggedOrDeoptOp::UntaggedKind::kFloat64:
       return os << "Float64";
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
     case ConvertJSPrimitiveToUntaggedOrDeoptOp::UntaggedKind::kHoleyFloat64:
       return os << "HoleyFloat64";
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
     case ConvertJSPrimitiveToUntaggedOrDeoptOp::UntaggedKind::kArrayIndex:
       return os << "ArrayIndex";
   }
@@ -1577,7 +1609,7 @@ void PrintMapSet(std::ostream& os, const ZoneRefSet<Map>& maps) {
   os << "{";
   for (size_t i = 0; i < maps.size(); ++i) {
     if (i != 0) os << ",";
-    os << JSONEscaped(maps[i].object());
+    os << base::JSONEscaped(maps[i].object());
   }
   os << "}";
 }
@@ -2132,13 +2164,25 @@ size_t CallOp::hash_value(HashingStrategy strategy) const {
   }
 }
 
+template <>
+struct fast_hash<EffectHandler> {
+  size_t operator()(const EffectHandler& h) {
+    DCHECK_NOT_NULL(h.block);
+    const BlockIndex index = h.block->index();
+    DCHECK(index.valid());
+    return index.id();
+  }
+};
+
 size_t CheckExceptionOp::hash_value(HashingStrategy strategy) const {
   if (strategy == HashingStrategy::kMakeSnapshotStable) {
     // Destructure here to cause a compilation error in case `options` is
     // changed.
-    auto [didnt_throw_block_value, catch_block_value] = options();
+    auto [didnt_throw_block_value, catch_block_value, effects_value] =
+        options();
     return HashWithOptions(index_for_bound_block(didnt_throw_block_value),
-                           index_for_bound_block(catch_block_value));
+                           index_for_bound_block(catch_block_value),
+                           effects_value);
   } else {
     return Base::hash_value(strategy);
   }

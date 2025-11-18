@@ -108,7 +108,6 @@ enum InstanceType : uint16_t;
   IF_WASM(V, WasmMemoryObject)        \
   IF_WASM(V, WasmResumeData)          \
   IF_WASM(V, WasmStruct)              \
-  IF_WASM(V, WasmDescriptorOptions)   \
   IF_WASM(V, WasmSuspendingObject)    \
   IF_WASM(V, WasmContinuationObject)  \
   IF_WASM(V, WasmTableObject)         \
@@ -209,7 +208,7 @@ using MapHandlesSpan = v8::MemorySpan<DirectHandle<Map>>;
 // |               |   - is_deprecated (bit 24)                      |
 // |               |   - is_unstable (bit 25)                        |
 // |               |   - is_migration_target (bit 26)                |
-// |               |   - is_extensible (bit 28)                      |
+// |               |   - is_extensible (bit 27)                      |
 // |               |   - may_have_interesting_properties (bit 28)    |
 // |               |   - construction_counter (bit 29..31)           |
 // |               |                                                 |
@@ -220,11 +219,14 @@ using MapHandlesSpan = v8::MemorySpan<DirectHandle<Map>>;
 // | TaggedPointer | [prototype]                                     |
 // +---------------+-------------------------------------------------+
 // | TaggedPointer | [constructor_or_back_pointer_or_native_context] |
+// |               | [WasmTypeInfo] (if Wasm map)                    |
 // +---------------+-------------------------------------------------+
 // | TaggedPointer | [instance_descriptors] (if JS object)           |
 // |               | [custom_descriptor]    (if WasmStruct)          |
 // +---------------+-------------------------------------------------+
-// | TaggedPointer | [dependent_code]                                |
+// | TaggedPointer | [immediate_supertype_map] (if WasmStruct with   |
+// |               |                            custom descriptor)   |
+// |               | [dependent_code] (all other maps)               |
 // +---------------+-------------------------------------------------+
 // | TaggedPointer | [prototype_validity_cell]                       |
 // +---------------+-------------------------------------------------+
@@ -510,7 +512,7 @@ class Map : public TorqueGeneratedMap<Map, HeapObject> {
   // PrototypeInfo is created lazily using this helper (which installs it on
   // the given prototype's map).
   static DirectHandle<PrototypeInfo> GetOrCreatePrototypeInfo(
-      DirectHandle<JSObject> prototype, Isolate* isolate);
+      DirectHandle<JSReceiver> prototype, Isolate* isolate);
   static DirectHandle<PrototypeInfo> GetOrCreatePrototypeInfo(
       DirectHandle<Map> prototype_map, Isolate* isolate);
   inline bool should_be_fast_prototype_map() const;
@@ -689,7 +691,6 @@ class Map : public TorqueGeneratedMap<Map, HeapObject> {
 
   // [instance descriptors]: describes the object.
   DECL_ACCESSORS(instance_descriptors, Tagged<DescriptorArray>)
-  DECL_RELAXED_ACCESSORS(instance_descriptors, Tagged<DescriptorArray>)
   DECL_ACQUIRE_GETTER(instance_descriptors, Tagged<DescriptorArray>)
   V8_EXPORT_PRIVATE void SetInstanceDescriptors(
       Isolate* isolate, Tagged<DescriptorArray> descriptors,
@@ -709,6 +710,14 @@ class Map : public TorqueGeneratedMap<Map, HeapObject> {
 
   // [dependent code]: list of optimized codes that weakly embed this map.
   DECL_ACCESSORS(dependent_code, Tagged<DependentCode>)
+#if V8_ENABLE_WEBASSEMBLY
+  // [immediate_supertype_map]: overlaid onto the "dependent_code" field,
+  // Wasm maps with custom descriptors store their immediate supertype map
+  // (i.e. the canonical RTT for their static type) here, for fast access
+  // from type checks in generated code.
+  DECL_ACCESSORS(immediate_supertype_map, Tagged<Map>)
+  static constexpr int kImmediateSupertypeOffset = kDependentCodeOffset;
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   // [prototype_validity_cell]: Cell containing the validity bit for prototype
   // chains or Tagged<Smi>(0) if uninitialized.

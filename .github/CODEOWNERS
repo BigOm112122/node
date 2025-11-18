@@ -228,3 +228,10 @@
 /lib/path.js @nodejs/path
 /lib/path/* @nodejs/path
 /test/parallel/test-path-* @nodejs/path
+
+# userland-migrations
+/doc/api/deprecations.md @nodejs/userland-migrations
+
+# dev container
+/.devcontainer/* @nodejs/devcontainer
+/doc/contributing/using-devcontainer.md @nodejs/devcontainer

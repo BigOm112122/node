@@ -414,7 +414,7 @@ void AsmJsParser::ValidateModuleParameters() {
 
 // 6.1 ValidateModule - variables
 void AsmJsParser::ValidateModuleVars() {
-  while (Peek(TOK(var)) || Peek(TOK(const))) {
+  while (!failed_ && (Peek(TOK(var)) || Peek(TOK(const)))) {
     bool mutable_variable = true;
     if (Check(TOK(var))) {
       // Had a var.
@@ -806,7 +806,8 @@ void AsmJsParser::ValidateFunction() {
   }
 
   // Check against limit on number of local variables.
-  if (locals.size() + function_temp_locals_used_ > kV8MaxWasmFunctionLocals) {
+  if (locals.size() + function_temp_locals_used_ + params.size() >
+      kV8MaxWasmFunctionLocals) {
     FAIL("Number of local variables exceeds internal limit");
   }
 

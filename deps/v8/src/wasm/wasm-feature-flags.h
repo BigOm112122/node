@@ -35,12 +35,6 @@
   /* V8 side owner: jabraham */                                                \
   V(instruction_tracing, "instruction tracing section", false)                 \
                                                                                \
-  /* Old flag for JavaScript Promise Integration proposal. */                  \
-  /* Use --experimental-wasm-jspi instead. */                                  \
-  /* https://github.com/WebAssembly/js-promise-integration */                  \
-  /* V8 side owner: thibaudm, fgm */                                           \
-  V(stack_switching, "stack switching", false)                                 \
-                                                                               \
   /* Custom Descriptors proposal. */                                           \
   /* https://github.com/WebAssembly/custom-descriptors */                      \
   /* Note: the JS Interop part of the proposal is enabled by */                \
@@ -67,11 +61,6 @@
   /* https://github.com/WebAssembly/stack-switching */                         \
   /* V8 side owner: fgm */                                                     \
   V(wasmfx, "core stack switching", false)                                     \
-                                                                               \
-  /* Resizable buffer integration */                                           \
-  /* https://github.com/WebAssembly/spec/issues/1292 */                        \
-  /* V8 side owner: gdeepti */                                                 \
-  V(rab_integration, "resizable buffers integration", false)                   \
                                                                                \
   /* Compilation hints */                                                      \
   /* https://github.com/WebAssembly/compilation-hints */                       \
@@ -110,7 +99,13 @@
   V(imported_strings_utf8, "imported strings (utf8 features)", false)          \
                                                                                \
   /* V8 side owner: thibaudm */                                                \
-  V(growable_stacks, "growable stacks for jspi", false)
+  V(growable_stacks, "growable stacks for jspi", false)                        \
+                                                                               \
+  /* Resizable buffer integration */                                           \
+  /* https://github.com/WebAssembly/spec/issues/1292 */                        \
+  /* V8 side owner: gdeepti */                                                 \
+  /* Staged in v14.3 */                                                        \
+  V(rab_integration, "resizable buffers integration", false)
 
 // #############################################################################
 // Shipped features (enabled by default). Remove the feature flag once they hit
@@ -130,25 +125,11 @@
   /* Shipped in v13.7. */                                                      \
   V(branch_hinting, "branch hinting", true)                                    \
                                                                                \
-  /* Imported Strings Proposal. */                                             \
-  /* https://github.com/WebAssembly/js-string-builtins */                      \
-  /* V8 side owner: jkummerow */                                               \
-  /* Shipped in v13.0 */                                                       \
-  V(imported_strings, "imported strings", true)                                \
-                                                                               \
   /* Exnref */                                                                 \
   /* This flag enables the new exception handling proposal */                  \
   /* V8 side owner: thibaudm */                                                \
   /* Shipped in v13.7 */                                                       \
-  V(exnref, "exnref", true)                                                    \
-                                                                               \
-  /* JavaScript Promise Integration proposal. */                               \
-  /* https://github.com/WebAssembly/js-promise-integration */                  \
-  /* I2S: */                                                                   \
-  /* https://groups.google.com/a/chromium.org/g/blink-dev/c/w_jCD4gf7Bc */     \
-  /* V8 side owner: thibaudm, fgm */                                           \
-  /* Shipped in v13.7 */                                                       \
-  V(jspi, "javascript promise integration", true)
+  V(exnref, "exnref", true)
 
 // Combination of all available wasm feature flags.
 #define FOREACH_WASM_FEATURE_FLAG(V)        \

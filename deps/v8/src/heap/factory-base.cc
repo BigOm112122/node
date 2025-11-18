@@ -104,9 +104,7 @@ Handle<Code> FactoryBase<Impl>::NewCode(const NewCodeOptions& options) {
   code->set_jump_table_info_offset(options.jump_table_info_offset);
   code->set_unwinding_info_offset(options.unwinding_info_offset);
   code->set_parameter_count(options.parameter_count);
-#ifdef V8_ENABLE_LEAPTIERING
   code->set_js_dispatch_handle(kNullJSDispatchHandle);
-#endif  // V8_ENABLE_LEAPTIERING
 
   // Set bytecode/interpreter data or deoptimization data.
   if (CodeKindUsesBytecodeOrInterpreterData(options.kind)) {
@@ -241,7 +239,7 @@ DirectHandle<FixedArray> FactoryBase<Impl>::NewFixedArrayWithZeroes(
   DCHECK_LE(0, length);
   if (length == 0) return impl()->empty_fixed_array();
   if (length > FixedArray::kMaxLength) {
-    FATAL("Invalid FixedArray size %d", length);
+    base::FatalNoSecurityImpact("Invalid FixedArray size %d", length);
   }
   Tagged<HeapObject> result = AllocateRawFixedArray(length, allocation);
   DisallowGarbageCollection no_gc;
@@ -338,7 +336,8 @@ Handle<BytecodeArray> FactoryBase<Impl>::NewBytecodeArray(
   DCHECK(allocation == AllocationType::kTrusted ||
          allocation == AllocationType::kSharedTrusted);
   if (length < 0 || length > BytecodeArray::kMaxLength) {
-    FATAL("Fatal JavaScript invalid size error %d", length);
+    base::FatalNoSecurityImpact("Fatal JavaScript invalid size error %d",
+                                length);
     UNREACHABLE();
   }
   DirectHandle<BytecodeWrapper> wrapper = NewBytecodeWrapper();
@@ -1187,7 +1186,8 @@ template <typename Impl>
 Handle<FreshlyAllocatedBigInt> FactoryBase<Impl>::NewBigInt(
     uint32_t length, AllocationType allocation) {
   if (length > BigInt::kMaxLength) {
-    FATAL("Fatal JavaScript invalid size error %d", length);
+    base::FatalNoSecurityImpact("Fatal JavaScript invalid size error %d",
+                                length);
     UNREACHABLE();
   }
   Tagged<HeapObject> result = AllocateRawWithImmortalMap(
@@ -1283,10 +1283,15 @@ FactoryBase<Impl>::AllocateRawOneByteInternalizedString(
 
   Tagged<Map> map = read_only_roots().internalized_one_byte_string_map();
   const int size = SeqOneByteString::SizeFor(length);
+  // TODO(jgruber): Can we promote these in ReadOnlyPromotion instead? There
+  // must've been a reason we didn't do so initially, but it may no longer
+  // apply.
+  bool can_alloc_in_ro_space =
+      impl()->CanAllocateInReadOnlySpace() && size <= kMaxRegularHeapObjectSize;
   const AllocationType allocation =
       RefineAllocationTypeForInPlaceInternalizableString(
-          impl()->CanAllocateInReadOnlySpace() ? AllocationType::kReadOnly
-                                               : AllocationType::kOld,
+          can_alloc_in_ro_space ? AllocationType::kReadOnly
+                                : AllocationType::kOld,
           map);
   Tagged<HeapObject> result = AllocateRawWithImmortalMap(size, allocation, map);
   Tagged<SeqOneByteString> answer = Cast<SeqOneByteString>(result);
@@ -1307,11 +1312,18 @@ FactoryBase<Impl>::AllocateRawTwoByteInternalizedString(
 
   Tagged<Map> map = read_only_roots().internalized_two_byte_string_map();
   int size = SeqTwoByteString::SizeFor(length);
+  // TODO(jgruber): Can we promote these in ReadOnlyPromotion instead? There
+  // must've been a reason we didn't do so initially, but it may no longer
+  // apply.
+  bool can_alloc_in_ro_space =
+      impl()->CanAllocateInReadOnlySpace() && size <= kMaxRegularHeapObjectSize;
   Tagged<SeqTwoByteString> answer =
       Cast<SeqTwoByteString>(AllocateRawWithImmortalMap(
           size,
           RefineAllocationTypeForInPlaceInternalizableString(
-              AllocationType::kOld, map),
+              can_alloc_in_ro_space ? AllocationType::kReadOnly
+                                    : AllocationType::kOld,
+              map),
           map));
   DisallowGarbageCollection no_gc;
   answer->clear_padding_destructively(length);
@@ -1329,7 +1341,8 @@ Tagged<HeapObject> FactoryBase<Impl>::AllocateRawArray(
   if ((size >
        isolate()->heap()->AsHeap()->MaxRegularHeapObjectSize(allocation)) &&
       v8_flags.use_marking_progress_bar) {
-    LargePageMetadata::FromHeapObject(result)
+    LargePageMetadata::FromHeapObject(isolate()->GetMainThreadIsolateUnsafe(),
+                                      result)
         ->marking_progress_tracker()
         .Enable(size);
   }
@@ -1340,7 +1353,8 @@ template <typename Impl>
 Tagged<HeapObject> FactoryBase<Impl>::AllocateRawFixedArray(
     int length, AllocationType allocation) {
   if (length < 0 || length > FixedArray::kMaxLength) {
-    FATAL("Fatal JavaScript invalid size error %d", length);
+    base::FatalNoSecurityImpact("Fatal JavaScript invalid size error %d",
+                                length);
     UNREACHABLE();
   }
   return AllocateRawArray(FixedArray::SizeFor(length), allocation);
@@ -1350,7 +1364,8 @@ template <typename Impl>
 Tagged<HeapObject> FactoryBase<Impl>::AllocateRawWeakArrayList(
     int capacity, AllocationType allocation) {
   if (capacity < 0 || capacity > WeakArrayList::kMaxCapacity) {
-    FATAL("Fatal JavaScript invalid size error %d", capacity);
+    base::FatalNoSecurityImpact("Fatal JavaScript invalid size error %d",
+                                capacity);
     UNREACHABLE();
   }
   return AllocateRawArray(WeakArrayList::SizeForCapacity(capacity), allocation);
@@ -1399,7 +1414,8 @@ FactoryBase<Impl>::NewSwissNameDictionaryWithCapacity(
   }
 
   if (capacity < 0 || capacity > SwissNameDictionary::MaxCapacity()) {
-    FATAL("Fatal JavaScript invalid size error %d", capacity);
+    base::FatalNoSecurityImpact("Fatal JavaScript invalid size error %d",
+                                capacity);
     UNREACHABLE();
   }
 
@@ -1480,21 +1496,27 @@ FactoryBase<Impl>::RefineAllocationTypeForInPlaceInternalizableString(
   return impl()->AllocationTypeForInPlaceInternalizableString();
 }
 
-#ifdef V8_ENABLE_LEAPTIERING
 template <typename Impl>
 JSDispatchHandle FactoryBase<Impl>::NewJSDispatchHandle(
     uint16_t parameter_count, DirectHandle<Code> code,
     JSDispatchTable::Space* space) {
   JSDispatchTable* jdt = isolate()->isolate_group()->js_dispatch_table();
-  auto Allocate = [&]() {
-    return jdt->TryAllocateAndInitializeEntry(space, parameter_count, *code);
+  auto result =
+      jdt->TryAllocateAndInitializeEntry(space, parameter_count, *code);
+  if (result) {
+    return *result;
+  }
+  auto allocate_callback = [&]() {
+    return (result = jdt->TryAllocateAndInitializeEntry(space, parameter_count,
+                                                        *code))
+        .has_value();
   };
   // Dispatch entries are only freed on major GCs.
   AllocationType type = AllocationType::kOld;
   auto allocator = isolate()->heap()->allocator();
-  return allocator->CustomAllocateWithRetryOrFail(Allocate, type);
+  allocator->RetryCustomAllocateOrFail(allocate_callback, type);
+  return *result;
 }
-#endif  // V8_ENABLE_LEAPTIERING
 
 // Instantiate FactoryBase for the two variants we want.
 template class EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) FactoryBase<Factory>;

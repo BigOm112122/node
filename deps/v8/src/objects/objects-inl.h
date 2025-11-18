@@ -95,11 +95,6 @@ bool IsTaggedIndex(Tagged<Object> obj) {
          TaggedIndex::IsValid(Tagged<TaggedIndex>(obj.ptr()).value());
 }
 
-bool IsJSObjectThatCanBeTrackedAsPrototype(Tagged<Object> obj) {
-  return IsHeapObject(obj) &&
-         IsJSObjectThatCanBeTrackedAsPrototype(Cast<HeapObject>(obj));
-}
-
 #define IS_TYPE_FUNCTION_DEF(type_)                                          \
   bool Is##type_(Tagged<Object> obj) {                                       \
     return IsHeapObject(obj) && Is##type_(Cast<HeapObject>(obj));            \
@@ -499,11 +494,16 @@ constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged<MaybeObject> obj) {
 
 bool OutsideSandboxOrInReadonlySpace(Tagged<HeapObject> obj) {
 #ifdef V8_ENABLE_SANDBOX
-  return !InsideSandbox(obj.address()) ||
+  return OutsideSandbox(obj.address()) ||
          MemoryChunk::FromHeapObject(obj)->SandboxSafeInReadOnlySpace();
 #else
   return true;
 #endif
+}
+
+bool IsJSObjectThatCanBeTrackedAsPrototype(Tagged<Object> obj) {
+  return IsHeapObject(obj) &&
+         IsJSObjectThatCanBeTrackedAsPrototype(Cast<HeapObject>(obj));
 }
 
 bool IsJSObjectThatCanBeTrackedAsPrototype(Tagged<HeapObject> obj) {
@@ -511,6 +511,19 @@ bool IsJSObjectThatCanBeTrackedAsPrototype(Tagged<HeapObject> obj) {
   // threadsafe. Objects in the shared heap have fixed layouts and their maps
   // never change.
   return IsJSObject(obj) && !HeapLayout::InWritableSharedSpace(*obj);
+}
+
+bool IsAnyObjectThatCanBeTrackedAsPrototype(Tagged<Object> obj) {
+  return IsHeapObject(obj) &&
+         IsAnyObjectThatCanBeTrackedAsPrototype(Cast<HeapObject>(obj));
+}
+
+bool IsAnyObjectThatCanBeTrackedAsPrototype(Tagged<HeapObject> obj) {
+  // Do not optimize objects in the shared heap because it is not
+  // threadsafe. Objects in the shared heap have fixed layouts and their maps
+  // never change.
+  return (IsJSObject(obj) || IsWasmObject(obj)) &&
+         !HeapLayout::InWritableSharedSpace(*obj);
 }
 
 DEF_HEAP_OBJECT_PREDICATE(HeapObject, IsUniqueName) {
@@ -874,11 +887,11 @@ ElementsKind Object::OptimalElementsKind(Tagged<Object> obj,
   // if (IsUninitializedHole(heap_object)) {
   //   return PACKED_SMI_ELEMENTS;
   // }
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
   if (IsUndefined(heap_object, GetReadOnlyRoots())) {
     return HOLEY_DOUBLE_ELEMENTS;
   }
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
   return PACKED_ELEMENTS;
 }
 
@@ -1089,10 +1102,26 @@ void HeapObject::InitExternalPointerField(size_t offset,
                                              tag, mode);
 }
 
+void HeapObject::InitExternalPointerField(size_t offset,
+                                          IsolateForSandbox isolate,
+                                          ExternalPointerTag tag, Address value,
+                                          WriteBarrierMode mode) {
+  i::InitExternalPointerField(address(), field_address(offset), isolate, tag,
+                              value);
+  CONDITIONAL_EXTERNAL_POINTER_WRITE_BARRIER(*this, static_cast<int>(offset),
+                                             tag, mode);
+}
+
 template <ExternalPointerTagRange tag_range>
 Address HeapObject::ReadExternalPointerField(size_t offset,
                                              IsolateForSandbox isolate) const {
   return i::ReadExternalPointerField<tag_range>(field_address(offset), isolate);
+}
+
+Address HeapObject::ReadExternalPointerField(
+    size_t offset, IsolateForSandbox isolate,
+    ExternalPointerTagRange tag_range) const {
+  return i::ReadExternalPointerField(field_address(offset), isolate, tag_range);
 }
 
 template <CppHeapPointerTag lower_bound, CppHeapPointerTag upper_bound>
@@ -1113,6 +1142,13 @@ void HeapObject::WriteExternalPointerField(size_t offset,
                                            IsolateForSandbox isolate,
                                            Address value) {
   i::WriteExternalPointerField<tag>(field_address(offset), isolate, value);
+}
+
+void HeapObject::WriteExternalPointerField(size_t offset,
+                                           IsolateForSandbox isolate,
+                                           ExternalPointerTag tag,
+                                           Address value) {
+  i::WriteExternalPointerField(field_address(offset), isolate, tag, value);
 }
 
 void HeapObject::SetupLazilyInitializedExternalPointerField(size_t offset) {
@@ -1171,13 +1207,6 @@ void HeapObject::WriteLazilyInitializedExternalPointerField(
 
 void HeapObject::SetupLazilyInitializedCppHeapPointerField(size_t offset) {
   CppHeapPointerSlot(field_address(offset)).init();
-}
-
-template <CppHeapPointerTag tag>
-void HeapObject::WriteLazilyInitializedCppHeapPointerField(
-    size_t offset, IsolateForPointerCompression isolate, Address value) {
-  i::WriteLazilyInitializedCppHeapPointerField<tag>(field_address(offset),
-                                                    isolate, value);
 }
 
 void HeapObject::WriteLazilyInitializedCppHeapPointerField(
@@ -1307,7 +1336,6 @@ template <typename ObjectType>
 JSDispatchHandle HeapObject::AllocateAndInstallJSDispatchHandle(
     ObjectType host, size_t offset, Isolate* isolate, uint16_t parameter_count,
     DirectHandle<Code> code, WriteBarrierMode mode) {
-#ifdef V8_ENABLE_LEAPTIERING
   JSDispatchTable::Space* space =
       isolate->GetJSDispatchTableSpaceFor(host->field_address(offset));
   JSDispatchHandle handle =
@@ -1322,9 +1350,6 @@ JSDispatchHandle HeapObject::AllocateAndInstallJSDispatchHandle(
   CONDITIONAL_JS_DISPATCH_HANDLE_WRITE_BARRIER(*host, handle, mode);
 
   return handle;
-#else
-  UNREACHABLE();
-#endif  // V8_ENABLE_LEAPTIERING
 }
 
 ObjectSlot HeapObject::RawField(int byte_offset) const {
@@ -1399,7 +1424,7 @@ MapWord MapWord::FromForwardingAddress(Tagged<HeapObject> map_word_host,
 }
 
 Tagged<HeapObject> MapWord::ToForwardingAddress(
-    Tagged<HeapObject> map_word_host) {
+    Tagged<HeapObject> map_word_host) const {
   DCHECK(IsForwardingAddress());
 #ifdef V8_EXTERNAL_CODE_SPACE
   // When the sandbox or the external code space is enabled, forwarding
@@ -1728,14 +1753,6 @@ void HeapObject::set_map_word_forwarded(Tagged<HeapObject> target_object,
                                         ReleaseStoreTag) {
   MapField::Release_Store_Map_Word(
       *this, MapWord::FromForwardingAddress(*this, target_object));
-}
-
-bool HeapObject::release_compare_and_swap_map_word_forwarded(
-    MapWord old_map_word, Tagged<HeapObject> new_target_object) {
-  Tagged_t result = MapField::Release_CompareAndSwap(
-      *this, old_map_word,
-      MapWord::FromForwardingAddress(*this, new_target_object));
-  return result == static_cast<Tagged_t>(old_map_word.ptr());
 }
 
 bool HeapObject::relaxed_compare_and_swap_map_word_forwarded(

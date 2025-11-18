@@ -791,6 +791,10 @@ struct OpEffects {
         // We might depend on previous checks to avoid deopting.
         .CanDependOnChecks();
   }
+  constexpr OpEffects CanThrowOrTrap() const {
+    // Allocates an exception.
+    return CanLeaveCurrentFunction().CanAllocate();
+  }
   // Producing identity doesn't prevent reorderings, but it prevents GVN from
   // de-duplicating identical operations.
   constexpr OpEffects CanCreateIdentity() const {
@@ -1794,6 +1798,20 @@ struct WordBinopDeoptOnOverflowOp
   FeedbackSource feedback;
   CheckForMinusZeroMode mode;
 
+  static bool IsCommutative(Kind kind) {
+    switch (kind) {
+      case Kind::kSignedAdd:
+      case Kind::kSignedMul:
+        return true;
+      case Kind::kSignedSub:
+      case Kind::kSignedDiv:
+      case Kind::kSignedMod:
+      case Kind::kUnsignedDiv:
+      case Kind::kUnsignedMod:
+        return false;
+    }
+  }
+
   static constexpr OpEffects effects = OpEffects().CanDeopt();
   base::Vector<const RegisterRepresentation> outputs_rep() const {
     return base::VectorOf(static_cast<const RegisterRepresentation*>(&rep), 1);
@@ -1804,8 +1822,14 @@ struct WordBinopDeoptOnOverflowOp
     return InputsRepFactory::PairOf(rep);
   }
 
-  V<Word> left() const { return input<Word>(0); }
-  V<Word> right() const { return input<Word>(1); }
+  template <IsWordT WordType = Word>
+  V<WordType> left() const {
+    return input<WordType>(0);
+  }
+  template <IsWordT WordType = Word>
+  V<WordType> right() const {
+    return input<WordType>(1);
+  }
   V<FrameState> frame_state() const { return input<FrameState>(2); }
 
   WordBinopDeoptOnOverflowOp(V<Word> left, V<Word> right,
@@ -2026,8 +2050,7 @@ struct ShiftOp : FixedArityOperationT<2, ShiftOp> {
                          RegisterRepresentation::Word32()});
   }
 
-  template <typename WordT = Word>
-    requires(IsWord<WordT>())
+  template <IsWordT WordT = Word>
   V<WordT> left() const {
     DCHECK(IsValidTypeFor<WordT>(rep));
     return input<WordT>(0);
@@ -3886,7 +3909,18 @@ struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
   using Kind = JSStackCheckOp::Kind;
   Kind kind;
 
-  static constexpr OpEffects effects = OpEffects().CanCallAnything();
+  OpEffects Effects() const {
+    switch (kind) {
+      case Kind::kLoop:
+        return OpEffects().RequiredWhenUnused().CanReadMemory().CanAllocate();
+      case Kind::kFunctionEntry:
+        // For function entry stack checks, we could model their side effects
+        // somewhat more accurately, but it probably doesn't matter.
+        return OpEffects().CanCallAnything();
+      case Kind::kBuiltinEntry:
+        UNREACHABLE();
+    }
+  }
 
   explicit WasmStackCheckOp(Kind kind) : Base(), kind(kind) {}
 
@@ -3896,7 +3930,6 @@ struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
       ZoneVector<MaybeRegisterRepresentation>& storage) const {
     return {};
   }
-
 
   auto options() const { return std::tuple{kind}; }
 };
@@ -4231,11 +4264,21 @@ struct CallOp : OperationT<CallOp> {
   void PrintOptions(std::ostream& os) const;
 };
 
+struct EffectHandler {
+  int tag_index;
+  Block* block;
+};
+
 // Catch an exception from the first operation of the `successor` block and
 // continue execution in `catch_block` in this case.
 struct CheckExceptionOp : FixedArityOperationT<1, CheckExceptionOp> {
   Block* didnt_throw_block;
   Block* catch_block;
+  // For WasmFX: an optional effect handler.
+  // A CheckExceptionOp is inserted if the operation must handle either
+  // exceptions, effects, or both. So users of this op must handle the case
+  // where {catch_block} is null or {effect_handler} is empty.
+  base::Vector<EffectHandler> effect_handlers;
 
   static constexpr OpEffects effects = OpEffects().CanCallAnything();
   base::Vector<const RegisterRepresentation> outputs_rep() const { return {}; }
@@ -4248,15 +4291,19 @@ struct CheckExceptionOp : FixedArityOperationT<1, CheckExceptionOp> {
   }
 
   CheckExceptionOp(V<Any> throwing_operation, Block* successor,
-                   Block* catch_block)
+                   Block* catch_block,
+                   base::Vector<EffectHandler> effect_handlers = {})
       : Base(throwing_operation),
         didnt_throw_block(successor),
-        catch_block(catch_block) {}
+        catch_block(catch_block),
+        effect_handlers(effect_handlers) {}
 
   V8_EXPORT_PRIVATE void Validate(const Graph& graph) const;
 
   size_t hash_value(HashingStrategy strategy = HashingStrategy::kDefault) const;
-  auto options() const { return std::tuple{didnt_throw_block, catch_block}; }
+  auto options() const {
+    return std::tuple{didnt_throw_block, catch_block, effect_handlers};
+  }
 };
 
 // This is a pseudo-operation that marks the beginning of a catch block. It
@@ -4566,7 +4613,14 @@ inline base::SmallVector<Block*, 4> SuccessorBlocks(const Operation& op) {
   switch (op.opcode) {
     case Opcode::kCheckException: {
       auto& casted = op.Cast<CheckExceptionOp>();
-      return {casted.didnt_throw_block, casted.catch_block};
+      base::SmallVector<Block*, 4> res{casted.didnt_throw_block};
+      if (casted.catch_block) {
+        res.push_back(casted.catch_block);
+      }
+      for (auto& effect_handler : casted.effect_handlers) {
+        res.push_back(effect_handler.block);
+      }
+      return res;
     }
     case Opcode::kGoto: {
       auto& casted = op.Cast<GotoOp>();
@@ -4736,10 +4790,10 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(
 
 enum class NumericKind : uint8_t {
   kFloat64Hole,
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
   kFloat64Undefined,
   kFloat64UndefinedOrHole,
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
   kFinite,
   kInteger,
   kSafeInteger,
@@ -5000,9 +5054,9 @@ struct ConvertJSPrimitiveToUntaggedOp
     kUint32,
     kBit,
     kFloat64,
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
     kHoleyFloat64,
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
   };
   enum class InputAssumptions : uint8_t {
     kBoolean,
@@ -5029,9 +5083,9 @@ struct ConvertJSPrimitiveToUntaggedOp
       case UntaggedKind::kInt64:
         return RepVector<RegisterRepresentation::Word64()>();
       case UntaggedKind::kFloat64:
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
       case UntaggedKind::kHoleyFloat64:
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
         return RepVector<RegisterRepresentation::Float64()>();
     }
   }
@@ -5062,9 +5116,9 @@ struct ConvertJSPrimitiveToUntaggedOrDeoptOp
     kAdditiveSafeInteger,
     kInt64,
     kFloat64,
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
     kHoleyFloat64,
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
     kArrayIndex,
   };
   enum class JSPrimitiveKind : uint8_t {
@@ -5092,9 +5146,9 @@ struct ConvertJSPrimitiveToUntaggedOrDeoptOp
       case UntaggedKind::kInt64:
         return RepVector<RegisterRepresentation::Word64()>();
       case UntaggedKind::kFloat64:
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
       case UntaggedKind::kHoleyFloat64:
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
         return RepVector<RegisterRepresentation::Float64()>();
       case UntaggedKind::kArrayIndex:
         return Is64() ? RepVector<RegisterRepresentation::Word64()>()
@@ -5186,6 +5240,8 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(
 V8_EXPORT_PRIVATE std::ostream& operator<<(
     std::ostream& os,
     TruncateJSPrimitiveToUntaggedOp::InputAssumptions input_assumptions);
+
+DEFINE_MULTI_SWITCH_INTEGRAL(TruncateJSPrimitiveToUntaggedOp::UntaggedKind, 4)
 
 struct TruncateJSPrimitiveToUntaggedOrDeoptOp
     : FixedArityOperationT<2, TruncateJSPrimitiveToUntaggedOrDeoptOp> {
@@ -5411,7 +5467,7 @@ struct DebugBreakOp : FixedArityOperationT<0, DebugBreakOp> {
   auto options() const { return std::tuple{}; }
 };
 
-struct DebugPrintOp : FixedArityOperationT<1, DebugPrintOp> {
+struct DebugPrintOp : OperationT<DebugPrintOp> {
   RegisterRepresentation rep;
 
   // We just need to ensure that the debug print stays in the same block and
@@ -5431,12 +5487,32 @@ struct DebugPrintOp : FixedArityOperationT<1, DebugPrintOp> {
     return InputsRepFactory::SingleRep(rep);
   }
 
-  OpIndex input() const { return Base::input(0); }
+  OpIndex value() const { return Base::input(0); }
+  OptionalV<String> label() const {
+    return input_count >= 2 ? Base::input<String>(1)
+                            : OptionalV<String>::Nullopt();
+  }
 
-  DebugPrintOp(OpIndex input, RegisterRepresentation rep)
-      : Base(input), rep(rep) {}
+  DebugPrintOp(OpIndex value, OptionalV<String> label,
+               RegisterRepresentation rep)
+      : Base(1 + label.has_value()), rep(rep) {
+    input(0) = value;
+    if (label.has_value()) {
+      input(1) = label.value();
+    }
+  }
 
   auto options() const { return std::tuple{rep}; }
+
+  template <typename Fn, typename Mapper>
+  V8_INLINE auto Explode(Fn fn, Mapper& mapper) const {
+    return fn(mapper.Map(value()), mapper.Map(label()), rep);
+  }
+
+  static DebugPrintOp& New(Graph* graph, OpIndex value, OptionalV<String> label,
+                           RegisterRepresentation rep) {
+    return Base::New(graph, 1 + label.has_value(), value, label, rep);
+  }
 };
 
 struct BigIntBinopOp : FixedArityOperationT<3, BigIntBinopOp> {
@@ -8054,8 +8130,8 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
   V(F64x2Floor)                                                               \
   V(F64x2Trunc)                                                               \
   V(F64x2NearestInt)                                                          \
-  /* TODO(mliedtke): Rename to ReverseBytes once the naming is decoupled from \
-   * Turbofan naming. */                                                      \
+  /* TODO(mliedtke): Rename to ReverseBytes once the naming is decoupled   */ \
+  /* from Turbofan naming. */                                                 \
   V(Simd128ReverseBytes)
 
 #define FOREACH_SIMD_128_UNARY_OPCODE(V)        \
@@ -9640,6 +9716,7 @@ constexpr size_t input_count(const base::Flags<T>) {
 }
 constexpr size_t input_count(const Block*) { return 0; }
 constexpr size_t input_count(const TSCallDescriptor*) { return 0; }
+constexpr size_t input_count(base::Vector<EffectHandler>) { return 0; }
 constexpr size_t input_count(const char*) { return 0; }
 constexpr size_t input_count(const DeoptimizeParameters*) { return 0; }
 constexpr size_t input_count(const FastApiCallParameters*) { return 0; }
@@ -9669,7 +9746,6 @@ constexpr size_t input_count(wasm::ValueType) { return 0; }
 constexpr size_t input_count(WasmTypeCheckConfig) { return 0; }
 constexpr size_t input_count(wasm::ModuleTypeIndex) { return 0; }
 constexpr size_t input_count(std::optional<AtomicMemoryOrder>) { return 0; }
-
 #endif
 
 // All parameters that are OpIndex-like (ie, OpIndex, and OpIndex containers)

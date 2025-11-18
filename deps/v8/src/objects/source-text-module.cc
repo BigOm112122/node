@@ -128,7 +128,7 @@ void SourceTextModule::CreateIndirectExport(
     DirectHandle<String> name, DirectHandle<SourceTextModuleInfoEntry> entry) {
   Handle<ObjectHashTable> exports(module->exports(), isolate);
   DCHECK(IsTheHole(exports->Lookup(name), isolate));
-  exports = ObjectHashTable::Put(exports, name, entry);
+  exports = ObjectHashTable::Put(isolate, exports, name, entry);
   module->set_exports(*exports);
 }
 
@@ -144,7 +144,7 @@ void SourceTextModule::CreateExport(Isolate* isolate,
   for (int i = 0, n = names->length(); i < n; ++i) {
     DirectHandle<String> name(Cast<String>(names->get(i)), isolate);
     DCHECK(IsTheHole(exports->Lookup(name), isolate));
-    exports = ObjectHashTable::Put(exports, name, cell);
+    exports = ObjectHashTable::Put(isolate, exports, name, cell);
   }
   module->set_exports(*exports);
 }
@@ -238,7 +238,7 @@ MaybeHandle<Cell> SourceTextModule::ResolveExport(
   Handle<ObjectHashTable> exports(module->exports(), isolate);
   DCHECK(IsSourceTextModuleInfoEntry(exports->Lookup(export_name)));
 
-  exports = ObjectHashTable::Put(exports, export_name, cell);
+  exports = ObjectHashTable::Put(isolate, exports, export_name, cell);
   module->set_exports(*exports);
   return cell;
 }
@@ -326,7 +326,8 @@ MaybeHandle<Cell> SourceTextModule::ResolveExportUsingStarExports(
       // Found a unique star export for this name.
       Handle<ObjectHashTable> exports(module->exports(), isolate);
       DCHECK(IsTheHole(exports->Lookup(export_name), isolate));
-      exports = ObjectHashTable::Put(exports, export_name, unique_cell);
+      exports =
+          ObjectHashTable::Put(isolate, exports, export_name, unique_cell);
       module->set_exports(*exports);
       return unique_cell;
     }
@@ -743,7 +744,7 @@ void SourceTextModule::FetchStarExports(Isolate* isolate,
     if (IsUndefined(*elem.second, isolate)) continue;  // Ambiguous export.
     DCHECK(!elem.first->Equals(ReadOnlyRoots(isolate).default_string()));
     DCHECK(IsCell(*elem.second));
-    exports = ObjectHashTable::Put(exports, elem.first, elem.second);
+    exports = ObjectHashTable::Put(isolate, exports, elem.first, elem.second);
   }
   module->set_exports(*exports);
 }
@@ -1121,16 +1122,16 @@ Maybe<bool> SourceTextModule::ExecuteAsyncModule(
           execute_async_module_context}
           .Build();
 
-  // 8. Perform ! PerformPromiseThen(capability.[[Promise]],
-  //                                 onFulfilled, onRejected).
+  // 8. Perform PerformPromiseThen(capability.[[Promise]],
+  //                               onFulfilled, onRejected).
   DirectHandle<Object> args[] = {on_fulfilled, on_rejected};
   if (V8_UNLIKELY(Execution::CallBuiltin(isolate, isolate->promise_then(),
                                          capability, base::VectorOf(args))
                       .is_null())) {
-    // TODO(349961173): We assume the builtin call can only fail with a
-    // termination exception. If this check fails in the wild investigate why
-    // the call fails. Otherwise turn this into a DCHECK in the future.
-    CHECK(isolate->is_execution_terminating());
+    // This may fail with a termination exception or if, for any weird reason,
+    // the promise has been rejected. See bugs: https://crbug.com/349961173 and
+    // https://crbug.com/442161248.
+    CHECK(isolate->has_exception());
     return Nothing<bool>();
   }
 

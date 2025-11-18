@@ -12,6 +12,8 @@
 #include "src/base/ieee754.h"
 #include "src/base/numerics/safe_conversions.h"
 #include "src/common/assert-scope.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/frames.h"
 #include "src/execution/pointer-authentication.h"
 #include "src/numbers/conversions.h"
 #include "src/numbers/ieee754.h"
@@ -943,9 +945,9 @@ double flat_string_to_f64(Address string_address) {
                             std::numeric_limits<double>::quiet_NaN());
 }
 
-void start_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
+void start_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
                  Address fp, Address pc) {
-  wasm::StackMemory* to = isolate->isolate_data()->active_stack();
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
   if (v8_flags.trace_wasm_stack_switching) {
     PrintF("Switch from stack %d to %d (start)\n", from->id(), to->id());
   }
@@ -953,9 +955,28 @@ void start_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
       from, to, sp, fp, pc);
 }
 
-void suspend_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
+// The active stack is checked inline in the wasm-to-js wrapper. This only
+// checks the inactive stacks.
+int32_t suspender_has_js_frames(Isolate* isolate) {
+  wasm::StackMemory* from_stack = isolate->isolate_data()->active_stack();
+  Tagged<WasmSuspenderObject> suspender =
+      isolate->isolate_data()->active_suspender();
+  Tagged<WasmSuspenderObject> parent = suspender->parent();
+  wasm::StackMemory* to_stack = parent->stack();
+  for (wasm::StackMemory* stack = from_stack; stack != to_stack;
+       stack = stack->jmpbuf()->parent) {
+    if (stack->jmpbuf()->is_on_central_stack) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void suspend_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
                    Address fp, Address pc) {
-  wasm::StackMemory* to = isolate->isolate_data()->active_stack();
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  auto suspender = isolate->isolate_data()->active_suspender();
+  suspender->set_stack(isolate, from);
   if (v8_flags.trace_wasm_stack_switching) {
     PrintF("Switch from stack %d to %d (suspend)\n", from->id(), to->id());
   }
@@ -963,17 +984,14 @@ void suspend_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
       from, to, sp, fp, pc);
 }
 
-void resume_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
-                  Address fp, Address pc, Address suspender_raw) {
+void resume_jspi_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                       Address fp, Address pc, Address suspender_raw) {
   Tagged<Object> suspender_obj(suspender_raw);
   auto suspender = TrustedCast<WasmSuspenderObject>(suspender_obj);
-  Tagged<Object> active_suspender = isolate->isolate_data()->active_suspender();
-  if (active_suspender == Smi::zero()) {
-    suspender->clear_parent();
-  } else {
-    suspender->set_parent(TrustedCast<WasmSuspenderObject>(active_suspender));
-  }
-  wasm::StackMemory* to = isolate->isolate_data()->active_stack();
+  Tagged<WasmSuspenderObject> active_suspender =
+      isolate->isolate_data()->active_suspender();
+  suspender->set_parent(active_suspender);
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
   if (v8_flags.trace_wasm_stack_switching) {
     PrintF("Switch from stack %d to %d (resume)\n", from->id(), to->id());
   }
@@ -982,8 +1000,79 @@ void resume_stack(Isolate* isolate, wasm::StackMemory* from, Address sp,
       from, to, sp, fp, pc);
 }
 
-void return_stack(Isolate* isolate, wasm::StackMemory* from) {
-  wasm::StackMemory* to = isolate->isolate_data()->active_stack();
+void resume_wasmfx_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                         Address fp, Address pc) {
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  to->set_current_continuation({});
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (resume)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Inactive, JumpBuffer::Suspended>(
+      from, to, sp, fp, pc);
+}
+
+Address suspend_wasmfx_stack(Isolate* isolate, Address sp, Address fp,
+                             Address pc, Address wanted_tag_raw,
+                             Address cont_raw) {
+  Tagged<Object> tag_obj(wanted_tag_raw);
+  auto wanted_tag = TrustedCast<WasmExceptionTag>(tag_obj);
+  Tagged<Object> cont_obj(cont_raw);
+  auto cont = TrustedCast<WasmContinuationObject>(cont_obj);
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  cont->set_stack(isolate, from);
+  from->set_current_continuation(cont);
+  wasm::StackMemory* to = from->jmpbuf()->parent;
+  bool found = false;
+  // Search the innermost effect handler with a matching tag.
+  // Unlike exception handling, we don't need to look at each frame. Only the
+  // top frame of each stack can have an effect handler.
+  while (true) {
+    StackFrameIterator it(isolate, to);
+    CHECK_EQ(it.frame()->type(), StackFrame::WASM_STACK_EXIT);
+    it.Advance();
+    CHECK(it.frame()->is_wasm());
+    WasmCode* wasm_code =
+        wasm::GetWasmCodeManager()->LookupCode(isolate, it.frame()->pc());
+    base::Vector<const WasmCode::EffectHandler> effect_handlers =
+        wasm_code->effect_handlers();
+    Tagged<Object> trusted_instance_data_obj(base::Memory<Address>(
+        it.frame()->fp() + WasmFrameConstants::kWasmInstanceDataOffset));
+    auto trusted_instance_data =
+        TrustedCast<WasmTrustedInstanceData>(trusted_instance_data_obj);
+    for (const auto& handler : effect_handlers) {
+      auto tag = trusted_instance_data->tags_table()->get(handler.tag_index);
+      if (wasm_code->instruction_start() + handler.call_offset ==
+              it.frame()->pc() &&
+          tag == wanted_tag) {
+        found = true;
+        to->jmpbuf()->pc =
+            wasm_code->instruction_start() + handler.handler_offset;
+        to->jmpbuf()->sp = it.frame()->sp();
+        to->jmpbuf()->fp = it.frame()->fp();
+        break;
+      }
+    }
+    if (found) break;
+    if (to->jmpbuf()->is_on_central_stack) {
+      // We are about to skip JS/C++ frames.
+      return kNullAddress;
+    }
+    to = to->jmpbuf()->parent;
+  }
+  if (!found) {
+    return kNullAddress;
+  }
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (suspend)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Suspended, JumpBuffer::Inactive>(
+      from, to, sp, fp, pc);
+  return reinterpret_cast<Address>(to);
+}
+
+void return_stack(Isolate* isolate, wasm::StackMemory* to) {
+  // The active stack was already updated by the builtin.
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
   if (v8_flags.trace_wasm_stack_switching) {
     PrintF("Switch from stack %d to %d (return)\n", from->id(), to->id());
   }
@@ -1008,6 +1097,7 @@ intptr_t switch_to_the_central_stack(Isolate* isolate, uintptr_t current_sp) {
   auto counter = isolate->wasm_switch_to_the_central_stack_counter();
   isolate->set_wasm_switch_to_the_central_stack_counter(counter + 1);
 
+  DCHECK_NE(thread_local_top->central_stack_sp_, kNullAddress);
   return thread_local_top->central_stack_sp_;
 }
 
@@ -1030,6 +1120,7 @@ intptr_t switch_to_the_central_stack_for_js(Isolate* isolate, Address fp) {
   StackGuard* stack_guard = isolate->stack_guard();
   wasm::StackMemory* stack = isolate->isolate_data()->active_stack();
   Address central_stack_sp = thread_local_top->central_stack_sp_;
+  DCHECK_NE(central_stack_sp, kNullAddress);
   stack->set_stack_switch_info(fp, central_stack_sp);
   stack_guard->SetStackLimitForStackSwitching(
       thread_local_top->central_stack_limit_);

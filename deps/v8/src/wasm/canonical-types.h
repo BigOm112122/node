@@ -82,20 +82,14 @@ class TypeCanonicalizer {
       CanonicalTypeIndex index) const;
   V8_EXPORT_PRIVATE const CanonicalStructType* LookupStruct(
       CanonicalTypeIndex index) const;
-  V8_EXPORT_PRIVATE const CanonicalArrayType* LookupArray(
-      CanonicalTypeIndex index) const;
+  const CanonicalArrayType* LookupArray(CanonicalTypeIndex index) const;
 
-  // Returns if {canonical_sub_index} is a canonical subtype of
-  // {canonical_super_index}.
-  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(CanonicalTypeIndex sub_index,
-                                            CanonicalTypeIndex super_index);
-
-  // Returns if the type at {sub_index} in {sub_module} is a subtype of the
-  // type at {super_index} in {super_module} after canonicalization.
-  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(ModuleTypeIndex sub_index,
-                                            ModuleTypeIndex super_index,
-                                            const WasmModule* sub_module,
-                                            const WasmModule* super_module);
+  // Returns if {sub_index} is a canonical subtype of {super_type}, which must
+  // be an indexed type. Interprets {sub_index} as (exact sub_index), which is
+  // appropriate for checking the actual type of a thing against a required
+  // type.
+  bool IsCanonicalSubtype(CanonicalTypeIndex sub_index,
+                          CanonicalValueType super_type);
 
   // Deletes recursive groups. Used by fuzzers to avoid accumulating memory, and
   // used by specific tests e.g. for serialization / deserialization.
@@ -114,10 +108,22 @@ class TypeCanonicalizer {
   V8_EXPORT_PRIVATE static void ClearWasmCanonicalTypesForTesting(
       Isolate* isolate);
 
-  V8_EXPORT_PRIVATE bool IsFunctionSignature(CanonicalTypeIndex index) const;
-  V8_EXPORT_PRIVATE bool IsStruct(CanonicalTypeIndex index) const;
-  V8_EXPORT_PRIVATE bool IsArray(CanonicalTypeIndex index) const;
-  V8_EXPORT_PRIVATE bool IsShared(CanonicalTypeIndex index) const;
+  bool IsFunctionSignature(CanonicalTypeIndex index) const;
+  bool IsStruct(CanonicalTypeIndex index) const;
+  bool IsArray(CanonicalTypeIndex index) const;
+  bool IsShared(CanonicalTypeIndex index) const;
+  bool has_descriptor(CanonicalTypeIndex index) const;
+
+  // Currently only used for heap verification.
+  uint8_t GetSubtypingDepth_Slow(CanonicalTypeIndex index) const {
+    uint8_t depth = 0;
+    const CanonicalType* type = canonical_types_[index];
+    while (type->supertype.valid()) {
+      type = canonical_types_[type->supertype];
+      depth++;
+    }
+    return depth;
+  }
 
   bool IsHeapSubtype(CanonicalTypeIndex sub, CanonicalTypeIndex super) const;
   bool IsCanonicalSubtype_Locked(CanonicalTypeIndex sub_index,
@@ -146,7 +152,7 @@ class TypeCanonicalizer {
     Kind kind = kFunction;
     bool is_final = false;
     bool is_shared = false;
-    uint8_t subtyping_depth = 0;
+    // 1 unused byte in the struct.
 
     constexpr CanonicalType(const CanonicalSig* sig,
                             CanonicalTypeIndex supertype, bool is_final,

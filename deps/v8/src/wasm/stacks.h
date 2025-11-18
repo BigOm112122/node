@@ -31,6 +31,7 @@ struct JumpBuffer {
   Address pc;
   void* stack_limit;
   StackMemory* parent = nullptr;
+  bool is_on_central_stack;
 
   // We track the state below to prevent stack corruptions under the sandbox
   // security model.
@@ -81,6 +82,9 @@ class StackMemory {
     constexpr int kStackBaseSafetyOffset = 0;
 #endif
     return memory_limit - kStackBaseSafetyOffset;
+  }
+  void set_current_continuation(Tagged<WasmContinuationObject> cont) {
+    current_cont_ = cont;
   }
   bool IsValidContinuation(Tagged<WasmContinuationObject> cont);
   JumpBuffer* jmpbuf() { return &jmpbuf_; }
@@ -167,7 +171,13 @@ class StackMemory {
   void set_func_ref(Tagged<WasmFuncRef> func_ref) { func_ref_ = func_ref; }
   static int func_ref_offset() { return OFFSET_OF(StackMemory, func_ref_); }
 
-  static int JSCentralStackLimitMarginKB() { return DEBUG_BOOL ? 80 : 40; }
+  static int JSCentralStackLimitMarginKB() {
+#if defined(DEBUG) || defined(V8_USE_ADDRESS_SANITIZER)
+    return 80;
+#else
+    return 40;
+#endif
+  }
 
   static int JSGrowableStackLimitMarginKB() {
     if (!v8_flags.experimental_wasm_growable_stacks) {
@@ -197,6 +207,11 @@ class StackMemory {
   constexpr static uint32_t jmpbuf_offset() {
     return OFFSET_OF(StackMemory, jmpbuf_);
   }
+  constexpr static uint32_t current_continuation_offset() {
+    return OFFSET_OF(StackMemory, current_cont_);
+  }
+  Address central_stack_sp() const { return central_stack_sp_; }
+  void set_central_stack_sp(Address sp) { central_stack_sp_ = sp; }
 
  private:
   // This constructor allocates a new stack segment.
@@ -215,6 +230,8 @@ class StackMemory {
   // allows us to add and remove from the vector in constant time (see
   // return_switch()).
   size_t index_;
+  // Top of the central stack when this stack becomes inactive.
+  Address central_stack_sp_ = kNullAddress;
   StackSwitchInfo stack_switch_info_;
   StackSegment* first_segment_ = nullptr;
   StackSegment* active_segment_ = nullptr;

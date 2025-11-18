@@ -233,6 +233,16 @@ uint16_t SharedFunctionInfo::internal_formal_parameter_count_with_receiver()
   return param_count;
 }
 
+bool SharedFunctionInfo::IsSloppyNormalJSFunction() const {
+  // TODO(dcarney): Fix the empty scope and push this down into
+  //                ScopeInfo::IsSloppyNormalJSFunction.
+  return kind() == FunctionKind::kNormalFunction && is_sloppy(language_mode());
+}
+
+bool SharedFunctionInfo::CanOnlyAccessFixedFormalParameters() const {
+  return scope_info(kAcquireLoad)->CanOnlyAccessFixedFormalParameters();
+}
+
 uint16_t SharedFunctionInfo::internal_formal_parameter_count_without_receiver()
     const {
   const uint16_t param_count = TorqueGeneratedClass::formal_parameter_count();
@@ -766,7 +776,7 @@ IsBaselineCompiledScope::IsBaselineCompiledScope(
   }
 }
 
-bool SharedFunctionInfo::has_simple_parameters() {
+bool SharedFunctionInfo::has_simple_parameters() const {
   return scope_info(kAcquireLoad)->HasSimpleParameters();
 }
 
@@ -814,13 +824,24 @@ Tagged<BytecodeArray> SharedFunctionInfo::GetBytecodeArray(
 }
 
 Tagged<BytecodeArray> SharedFunctionInfo::GetActiveBytecodeArray(
-    IsolateForSandbox isolate) const {
+    Isolate* isolate) const {
   Tagged<Object> data = GetTrustedData(isolate);
   if (Tagged<Code> baseline_code; TryCast(data, &baseline_code)) {
     data = baseline_code->bytecode_or_interpreter_data();
   }
   if (Tagged<BytecodeArray> bytecode_array; TryCast(data, &bytecode_array)) {
     return bytecode_array;
+  }
+  if (!Is<InterpreterData>(data)) {
+    // See https://crbug.com/442277757
+    InstanceType type = static_cast<InstanceType>(-1);
+    if (Is<HeapObject>(data)) {
+      type = Cast<HeapObject>(data)->map()->instance_type();
+    }
+    isolate->PushStackTraceAndDie(
+        reinterpret_cast<void*>(data.ptr()),
+        reinterpret_cast<void*>(GetTrustedData(isolate).ptr()),
+        reinterpret_cast<void*>(type));
   }
   return SbxCast<InterpreterData>(data)->bytecode_array();
 }

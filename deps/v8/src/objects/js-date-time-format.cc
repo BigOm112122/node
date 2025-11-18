@@ -1681,10 +1681,16 @@ std::optional<icu::UnicodeString> CallICUFormat(
     JSDateTimeFormat::DateTimeStyle time_style,
     bool has_to_locale_string_time_zone, double time_in_milliseconds,
     icu::FieldPositionIterator* fp_iter, UErrorCode& status) {
+  if (U_FAILURE(status)) {
+    return std::nullopt;
+  }
   icu::UnicodeString result;
   // Use the date_format directly for Date value.
   if (kind == PatternKind::kDate) {
     date_format.format(time_in_milliseconds, result, fp_iter, status);
+    if (U_FAILURE(status)) {
+      return std::nullopt;
+    }
     result = Replace202F(result);
     return result;
   }
@@ -1696,6 +1702,9 @@ std::optional<icu::UnicodeString> CallICUFormat(
     return std::nullopt;
   }
   pattern->format(time_in_milliseconds, result, fp_iter, status);
+  if (U_FAILURE(status)) {
+    return std::nullopt;
+  }
   result = Replace202F(result);
   return result;
 }
@@ -1720,6 +1729,28 @@ MaybeDirectHandle<String> FormatDateTime(
     result = Replace202F(result);
   }
 
+  if (v8_flags.icu_british_remove_full_weekday_comma) {
+    // Revert ICU 76 adding a comma after a full weekday for en-AU/GB/IN.
+    int32_t found = result.indexOf(',');
+    if (found != -1) {
+      const icu::Locale& locale = date_format.getSmpFmtLocale();
+      if (strcmp(locale.getLanguage(), "en") == 0 &&
+          (strcmp(locale.getCountry(), "AU") == 0 ||
+           strcmp(locale.getCountry(), "GB") == 0 ||
+           strcmp(locale.getCountry(), "IN") == 0)) {
+        // https://github.com/unicode-org/cldr/pull/3879 changed formats like
+        // "EEEE d MMM y" to "EEEE, d MMM y", adding a comma. Check if the
+        // format begins with "EEEE," and if so remove the first comma. This is
+        // the last check because toPattern() allocates a new string.
+        icu::UnicodeString pattern;
+        date_format.toPattern(pattern);
+        if (pattern.startsWith("EEEE,")) {
+          result = result.remove(found, 1);
+        }
+      }
+    }
+  }
+
   return Intl::ToString(isolate, result);
 }
 
@@ -1732,8 +1763,7 @@ MaybeDirectHandle<String> FormatMillisecondsByKindToString(
       date_time_format->explicit_components_in_options(), kind,
       date_time_format->date_style(), date_time_format->time_style(),
       date_time_format->has_to_locale_string_time_zone(), x, nullptr, status);
-  DCHECK(U_SUCCESS(status));
-  if (!result.has_value()) {
+  if (U_FAILURE(status) || !result.has_value()) {
     THROW_NEW_ERROR(
         isolate,
         NewTypeError(MessageTemplate::kInvalidArgumentForTemporal, value));

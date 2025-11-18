@@ -682,6 +682,15 @@ void Serializer::ObjectSerializer::SerializeJSArrayBuffer() {
   }
 }
 
+void Serializer::ObjectSerializer::SerializeNativeContext() {
+  DisallowGarbageCollection no_gc;
+  Tagged<Context> context = Cast<Context>(*object_);
+  Tagged<Object> saved_next_context_link = context->next_context_link();
+  context->set_next_context_link(ReadOnlyRoots(isolate()).undefined_value());
+  SerializeObject();
+  context->set_next_context_link(saved_next_context_link);
+}
+
 void Serializer::ObjectSerializer::SerializeExternalString() {
   // For external strings with known resources, we replace the resource field
   // with the encoded external reference, which we restore upon deserialize.
@@ -846,6 +855,10 @@ void Serializer::ObjectSerializer::Serialize(SlotType slot_type) {
     SerializeJSArrayBuffer();
     return;
   }
+  if (InstanceTypeChecker::IsNativeContext(instance_type)) {
+    SerializeNativeContext();
+    return;
+  }
   if (InstanceTypeChecker::IsScript(instance_type)) {
     // Clear cached line ends & compiled lazy function positions.
     Cast<Script>(object_)->set_line_ends(Smi::zero());
@@ -868,12 +881,12 @@ void Serializer::ObjectSerializer::Serialize(SlotType slot_type) {
 }
 
 namespace {
-SnapshotSpace GetSnapshotSpace(Tagged<HeapObject> object) {
+SnapshotSpace GetSnapshotSpace(Isolate* isolate, Tagged<HeapObject> object) {
   if (ReadOnlyHeap::Contains(object)) {
     return SnapshotSpace::kReadOnlyHeap;
   } else {
     AllocationSpace heap_space =
-        MutablePageMetadata::FromHeapObject(object)->owner_identity();
+        MutablePageMetadata::FromHeapObject(isolate, object)->owner_identity();
     // Large code objects are not supported and cannot be expressed by
     // SnapshotSpace.
     DCHECK_NE(heap_space, CODE_LO_SPACE);
@@ -926,7 +939,7 @@ void Serializer::ObjectSerializer::SerializeObject() {
   if (map == ReadOnlyRoots(isolate()).descriptor_array_map()) {
     map = ReadOnlyRoots(isolate()).strong_descriptor_array_map();
   }
-  SnapshotSpace space = GetSnapshotSpace(*object_);
+  SnapshotSpace space = GetSnapshotSpace(isolate(), *object_);
   SerializePrologue(space, size, map);
 
   // Serialize the rest of the object.
@@ -1472,7 +1485,8 @@ bool Serializer::SerializeReadOnlyObjectReference(Tagged<HeapObject> obj,
   // create a back reference that encodes the page number as the chunk_index and
   // the offset within the page as the chunk_offset.
   Address address = obj.address();
-  MemoryChunkMetadata* chunk = MemoryChunkMetadata::FromAddress(address);
+  MemoryChunkMetadata* chunk =
+      MemoryChunkMetadata::FromAddress(isolate(), address);
   uint32_t chunk_index = 0;
   ReadOnlySpace* const read_only_space = isolate()->heap()->read_only_space();
   DCHECK(!read_only_space->writable());

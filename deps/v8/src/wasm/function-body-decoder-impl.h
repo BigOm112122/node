@@ -906,9 +906,9 @@ template <typename ValidationTag>
 class BranchTableIterator {
  public:
   uint32_t cur_index() const { return index_; }
-  bool has_next() const {
-    return VALIDATE(decoder_->ok()) && index_ <= table_count_;
-  }
+  // Returns false if we are at the end of the table or if the decoder is in a
+  // `failed()` state, e.g., because the decoder interface bailed out.
+  bool has_next() const { return decoder_->ok() && index_ <= table_count_; }
   uint32_t next() {
     DCHECK(has_next());
     index_++;
@@ -955,11 +955,12 @@ template <typename ValidationTag>
 class TryTableIterator {
  public:
   uint32_t cur_index() const { return index_; }
-  bool has_next() const {
-    return VALIDATE(decoder_->ok()) && index_ < table_count_;
-  }
+  // Returns false if we are at the end of the table or if the decoder is in a
+  // `failed()` state, e.g., because the decoder interface bailed out.
+  bool has_next() const { return decoder_->ok() && index_ < table_count_; }
 
   CatchCase next() {
+    DCHECK(has_next());
     uint8_t kind =
         static_cast<CatchKind>(decoder_->read_u8<ValidationTag>(pc_));
     pc_ += 1;
@@ -975,7 +976,8 @@ class TryTableIterator {
   }
 
   // Length, including the length of the {TryTableImmediate}, but not the
-  // opcode. Must be called after consumingthe table entries.
+  // opcode. Must be called after consuming the table entries and before the
+  // interface call (in case that leaves the decoder in failed state).
   uint32_t length() const {
     DCHECK(!has_next());
     return static_cast<uint32_t>(pc_ - start_);
@@ -1012,11 +1014,12 @@ template <typename ValidationTag>
 class EffectHandlerTableIterator {
  public:
   uint32_t cur_index() const { return index_; }
-  bool has_next() const {
-    return VALIDATE(decoder_->ok()) && index_ < table_count_;
-  }
+  // Returns false if we are at the end of the table or if the decoder is in a
+  // `failed()` state, e.g., because the decoder interface bailed out.
+  bool has_next() const { return decoder_->ok() && index_ < table_count_; }
 
   HandlerCase next() {
+    DCHECK(has_next());
     uint8_t kind =
         static_cast<CatchKind>(decoder_->read_u8<ValidationTag>(pc_));
     pc_ += 1;
@@ -1035,7 +1038,8 @@ class EffectHandlerTableIterator {
   }
 
   // Length, including the length of the {EffectHandlerTableImmediate}, but not
-  // the opcode. Must be called after consuming the table entries.
+  // the opcode. Must be called after consuming the table entries and before the
+  // interface call (in case that leaves the decoder in failed state).
   uint32_t length() const {
     DCHECK(!has_next());
     return static_cast<uint32_t>(pc_ - start_);
@@ -1464,6 +1468,8 @@ struct ControlBase : public PcForErrors<ValidationTag::validate> {
     const Value args[], const ContIndexImmediate& new_imm, Value* result)      \
   F(Resume, const ContIndexImmediate& imm, base::Vector<HandlerCase> handlers, \
     const Value& cont_ref, const Value args[], const Value returns[])          \
+  F(ResumeHandler, base::Vector<const HandlerCase> handlers,                   \
+    int handler_index, const Value* cont_ref)                                  \
   F(ResumeThrow, const ContIndexImmediate& cont_imm,                           \
     const TagIndexImmediate& exc_imm, base::Vector<HandlerCase> handlers,      \
     const Value args[], const Value returns[])                                 \
@@ -1536,7 +1542,7 @@ struct ControlBase : public PcForErrors<ValidationTag::validate> {
     const Value& length)                                                       \
   F(I31GetS, const Value& input, Value* result)                                \
   F(I31GetU, const Value& input, Value* result)                                \
-  F(RefGetDesc, const Value& ref, Value* desc)                                 \
+  F(RefGetDesc, ModuleTypeIndex struct_index, const Value& ref, Value* desc)   \
   F(RefTest, HeapType target_type, const Value& obj, Value* result,            \
     bool null_succeeds)                                                        \
   F(RefTestAbstract, const Value& obj, HeapType type, Value* result,           \
@@ -2843,7 +2849,11 @@ class WasmDecoder : public Decoder {
             IndexImmediate data_imm(decoder, pc + length + array_imm.length,
                                     "segment index", validate);
             (ios.TypeIndex(array_imm), ...);
-            (ios.DataSegmentIndex(data_imm), ...);
+            if (opcode == kExprArrayNewData || opcode == kExprArrayInitData) {
+              (ios.DataSegmentIndex(data_imm), ...);
+            } else {
+              (ios.ElemSegmentIndex(data_imm), ...);
+            }
             return length + array_imm.length + data_imm.length;
           }
           case kExprRefCast:
@@ -3772,9 +3782,9 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       try_block->catch_cases[i] = catch_case;
       ++i;
     }
-    uint32_t try_table_length = try_table_iterator.length();
+
     CALL_INTERFACE_IF_OK_AND_REACHABLE(TryTable, try_block);
-    return 1 + block_imm.length + try_table_length;
+    return 1 + block_imm.length + try_table_iterator.length();
   }
 
   DECODE(ThrowRef) {
@@ -4108,7 +4118,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
 
   DECODE(BrTable) {
     BranchTableImmediate imm(this, this->pc_ + 1, validate);
-    BranchTableIterator<ValidationTag> iterator(this, imm);
+    BranchTableIterator<ValidationTag> br_table_iterator(this, imm);
     Value key = Pop(kWasmI32);
     if (!VALIDATE(this->ok())) return 0;
     if (!this->Validate(this->pc_ + 1, imm)) return 0;
@@ -4120,10 +4130,10 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
 
     uint32_t arity = 0;
 
-    while (iterator.has_next()) {
-      const uint32_t index = iterator.cur_index();
-      const uint8_t* pos = iterator.pc();
-      const uint32_t target = iterator.next();
+    while (br_table_iterator.has_next()) {
+      const uint32_t index = br_table_iterator.cur_index();
+      const uint8_t* pos = br_table_iterator.pc();
+      const uint32_t target = br_table_iterator.next();
       if (!VALIDATE(target < control_depth())) {
         this->DecodeError(pos, "invalid branch depth: %u", target);
         return 0;
@@ -4149,6 +4159,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       }
     }
 
+    // We must get the `length()` before the interface call, see method comment.
     if (V8_LIKELY(current_code_reachable_and_ok_)) {
       CALL_INTERFACE(BrTable, imm, key);
 
@@ -4157,7 +4168,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       }
     }
     EndControl();
-    return 1 + iterator.length();
+    return 1 + br_table_iterator.length();
   }
 
   DECODE(Return) {
@@ -4209,7 +4220,6 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       return 0;
     }
     ValueType type = ValueType::RefNull(imm.type);
-    if (type.has_index()) type = type.AsExactIfEnabled(this->enabled_);
     Value* value = Push(type);
     CALL_INTERFACE_IF_OK_AND_REACHABLE(RefNull, type, value);
     return 1 + imm.length;
@@ -4243,9 +4253,17 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
     if (!this->ValidateFunction(this->pc_ + 1, imm)) return 0;
     ModuleTypeIndex index = this->module_->functions[imm.index].sig_index;
     const TypeDefinition& type_def = this->module_->type(index);
-    Value* value =
-        Push(ValueType::Ref(index, type_def.is_shared, RefTypeKind::kFunction)
-                 .AsExactIfEnabled(this->enabled_));
+    ValueType result_type =
+        ValueType::Ref(index, type_def.is_shared, RefTypeKind::kFunction);
+    // For imported functions, we must return an inexact type, because
+    // importing checks subtyping, i.e. for function types f1 <: f2, it is
+    // legal to provide a function with type f1 when one with type f2 is
+    // expected.
+    if (this->enabled_.has_custom_descriptors() &&
+        imm.index >= this->module_->num_imported_functions) {
+      result_type = result_type.AsExact();
+    }
+    Value* value = Push(result_type);
     CALL_INTERFACE_IF_OK_AND_REACHABLE(RefFunc, imm.index, value);
     return 1 + imm.length;
   }
@@ -4582,13 +4600,14 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
   }
 
   V8_INLINE int DecodeEffectHandlerTable(
+      ContIndexImmediate cont_imm,
       EffectHandlerTableImmediate& handler_table_imm,
       base::Vector<HandlerCase>& handlers) {
-    EffectHandlerTableIterator<ValidationTag> handle_iterator(
+    EffectHandlerTableIterator<ValidationTag> handler_iterator(
         this, handler_table_imm);
     int i = 0;
-    while (handle_iterator.has_next()) {
-      HandlerCase handler = handle_iterator.next();
+    while (handler_iterator.has_next()) {
+      HandlerCase handler = handler_iterator.next();
 
       if (!this->Validate(this->pc_, handler.tag)) {
         return -1;
@@ -4598,17 +4617,69 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       uint32_t stack_size = stack_.size();
       uint32_t push_count = 0;
       if (handler.kind == kOnSuspend) {
-        const WasmTagSig* sig = handler.tag.tag->sig;
-        stack_.EnsureMoreCapacity(static_cast<int>(sig->parameter_count()),
-                                  this->zone_);
-        for (ValueType type : sig->parameters()) Push(type);
-        push_count += sig->parameter_count();
-
+        const WasmTagSig* tag_sig = handler.tag.tag->sig;
+        stack_.EnsureMoreCapacity(
+            static_cast<int>(tag_sig->parameter_count() + 1), this->zone_);
         if (!VALIDATE((this->Validate(this->pc_, handler.maybe_depth.br,
                                       control_depth())))) {
           return -1;
         }
         Control* target = control_at(handler.maybe_depth.br.depth);
+        int merge_arity = target->br_merge()->arity;
+        for (ValueType type : tag_sig->parameters()) Push(type);
+        push_count += tag_sig->parameter_count();
+
+        // The target block's last return type must be a continuation type
+        // index.
+        if (!VALIDATE(merge_arity > 0)) {
+          this->DecodeError(
+              "expected (ref null? cont) as last return type "
+              "of target block for handler %u"
+              ", no return type found",
+              handler_iterator.cur_index() - 1);
+          return -1;
+        }
+        Value& val = (*target->br_merge())[target->br_merge()->arity - 1];
+        ValueType type = val.type;
+        if (!VALIDATE(type.has_index() &&
+                      this->module_->has_cont_type(type.ref_index()))) {
+          this->DecodeError(
+              "expected (ref null? cont) as last return type "
+              "of target block for handler %u, got %s",
+              handler_iterator.cur_index() - 1, val.type.name().c_str());
+          return -1;
+        }
+        base::Vector<const ValueType> old_cont_returns =
+            this->module_->signature(cont_imm.cont_type->contfun_typeindex())
+                ->returns();
+        const ContType* cont_type = this->module_->cont_type(type.ref_index());
+        ModuleTypeIndex sig_index = cont_type->contfun_typeindex();
+        const FunctionSig* cont_sig = this->module_->signature(sig_index);
+
+        // The function type [t2*] -> [t*] must be a subtype of the continuation
+        // type, where t2* is the return type of the tag, and t* is the return
+        // type of the resumed continuation.
+        // This is contravariant in the parameters, so the continuation params
+        // should be a subtype of the tag returns t2*.
+        if (!VALIDATE(
+                IsSubtypeVec(cont_sig->parameters(), tag_sig->returns()))) {
+          this->DecodeError(
+              "Type mismatch between cont parameters and tag returns for "
+              "handler %u",
+              handler_iterator.cur_index() - 1);
+          return -1;
+        }
+        // And the old returns should be a subtype of the new ones.
+        if (!VALIDATE(IsSubtypeVec(old_cont_returns, cont_sig->returns()))) {
+          this->DecodeError(
+              "Type mismatch between old and new cont returns for handler %u",
+              handler_iterator.cur_index() - 1);
+          return -1;
+        }
+        Push(type);
+        push_count += 1;
+
+        // Finally, type check the branch itself.
         if (!VALIDATE(push_count == target->br_merge()->arity)) {
           this->DecodeError(
               "handler generates %d operand%s, target block returns %d",
@@ -4629,7 +4700,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       }
       i++;
     }
-    return handle_iterator.length();
+    return handler_iterator.length();
   }
 
   DECODE(Resume) {
@@ -4648,7 +4719,8 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
         this->zone_->template AllocateVector<HandlerCase>(
             handler_table_imm.table_count);
 
-    int table_length = DecodeEffectHandlerTable(handler_table_imm, handlers);
+    int table_length =
+        DecodeEffectHandlerTable(imm, handler_table_imm, handlers);
     if (table_length < 0) return 0;
 
     // Continuations are function-like values; check the args and returns.
@@ -4659,6 +4731,21 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
 
     CALL_INTERFACE_IF_OK_AND_REACHABLE(Resume, imm, handlers, cont_ref,
                                        args.data(), returns);
+    if (V8_LIKELY(current_code_reachable_and_ok_)) {
+      MarkMightThrow();
+      for (int i = 0; i < handlers.length(); ++i) {
+        if (handlers[i].kind == kOnSuspend) {
+          // TODO(thibaudm): Push tag params here.
+          Value* suspend_cont =
+              Push(ValueType::Ref(imm.index, false, RefTypeKind::kCont));
+          CALL_INTERFACE_IF_OK_AND_REACHABLE(ResumeHandler, handlers, i,
+                                             suspend_cont);
+          Pop();
+          Control* target = control_at(handlers[i].maybe_depth.br.depth);
+          target->br_merge()->reached = true;
+        }
+      }
+    }
     return 1 + imm.length + table_length;
   }
 
@@ -4687,7 +4774,8 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
         this->zone_->template AllocateVector<HandlerCase>(
             handler_table_imm.table_count);
 
-    int table_length = DecodeEffectHandlerTable(handler_table_imm, handlers);
+    int table_length =
+        DecodeEffectHandlerTable(cont_imm, handler_table_imm, handlers);
     if (table_length < 0) return 0;
 
     // The continuation might return, check the return type.
@@ -4697,6 +4785,15 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
 
     CALL_INTERFACE_IF_OK_AND_REACHABLE(ResumeThrow, cont_imm, exc_imm, handlers,
                                        args.data(), returns);
+    if (V8_LIKELY(current_code_reachable_and_ok_)) {
+      MarkMightThrow();
+      for (const HandlerCase& handler : handlers) {
+        if (handler.kind == kOnSuspend) {
+          Control* target = control_at(handler.maybe_depth.br.depth);
+          target->br_merge()->reached = true;
+        }
+      }
+    }
     return 1 + exc_imm.length + cont_imm.length + table_length;
   }
 
@@ -5135,9 +5232,8 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
     // Initialize start- and end-merges of {c} with values according to the
     // in- and out-types of {c} respectively.
     const uint8_t* pc = this->pc_;
-    InitMerge(&new_block->end_merge, imm.out_arity(), [pc, &imm](uint32_t i) {
-      return Value{pc, imm.out_type(i)};
-    });
+    InitMerge(&new_block->end_merge, imm.out_arity(),
+              [pc, &imm](uint32_t i) { return Value{pc, imm.out_type(i)}; });
     InitMerge(&new_block->start_merge, imm.in_arity(),
               [arg_base](uint32_t i) { return arg_base[i]; });
     return new_block;
@@ -5513,14 +5609,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
             (!null_succeeds || !obj.type.is_nullable() ||
              obj.type.is_string_view() || expected_type.is_string_view())) ||
            ((!null_succeeds || !obj.type.is_nullable()) &&
-            (expected_type.representation() == HeapType::kNone ||
-             expected_type.representation() == HeapType::kNoFunc ||
-             expected_type.representation() == HeapType::kNoExtern ||
-             expected_type.representation() == HeapType::kNoExn ||
-             expected_type.representation() == HeapType::kNoneShared ||
-             expected_type.representation() == HeapType::kNoFuncShared ||
-             expected_type.representation() == HeapType::kNoExternShared ||
-             expected_type.representation() == HeapType::kNoExnShared));
+            (expected_type.is_none_type()));
   }
 
   // Checks if {obj} is a subtype of type, thus checking will always
@@ -6007,10 +6096,29 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
           return 0;
         }
         Value ref = Pop(ValueType::RefNull(imm.heap_type()));
+        if (!VALIDATE(this->ok())) return 0;
+        // "none" and "bottom" are subtypes of "exact $t", and to maintain
+        // subsumption, the result must not be less specific when the input is
+        // more specific, so here we must treat them both as if they were exact.
+        // See example at:
+        // https://github.com/WebAssembly/custom-descriptors/issues/48
+        Exactness result_exactness = ref.type.exactness();
+        if (ref.type == kWasmNullRef || ref.type == kWasmRefNone ||
+            ref.type == kWasmBottom) {
+          result_exactness = kExact;
+        } else {
+          // All other generic types would have failed validation above.
+          DCHECK(ref.type.has_index());
+          // Exactness is only propagated if the actual type on the stack
+          // exactly matched the type immediate.
+          if (ref.type.ref_index() != imm.index) {
+            result_exactness = kAnySubtype;
+          }
+        }
         Value* desc =
             Push(ValueType::Ref(this->module_->heap_type(type.descriptor))
-                     .AsExact(ref.type.exactness()));
-        CALL_INTERFACE_IF_OK_AND_REACHABLE(RefGetDesc, ref, desc);
+                     .AsExact(result_exactness));
+        CALL_INTERFACE_IF_OK_AND_REACHABLE(RefGetDesc, imm.index, ref, desc);
         return opcode_length + imm.length;
       }
       case kExprRefCastDesc:
@@ -6097,6 +6205,13 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
               WasmOpcodes::OpcodeName(opcode));
           return 0;
         }
+        if (!VALIDATE(!IsSubtypeOf(ValueType::Ref(target_type), kWasmContRef,
+                                   this->module_))) {
+          this->DecodeError(
+              "Invalid type for %s: may not cast %s to continuation type",
+              WasmOpcodes::OpcodeName(opcode), target_type.name().c_str());
+          return 0;
+        }
 
         bool null_succeeds = opcode == kExprRefCastNull;
         Value* value = Push(ValueType::RefMaybeNull(
@@ -6168,6 +6283,13 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
               this->pc_,
               "Invalid type for %s: string views are not classifiable",
               WasmOpcodes::OpcodeName(opcode));
+          return 0;
+        }
+        if (!VALIDATE(!IsSubtypeOf(ValueType::Ref(target_type), kWasmContRef,
+                                   this->module_))) {
+          this->DecodeError(
+              "Invalid type for %s: may not cast %s to continuation type",
+              WasmOpcodes::OpcodeName(opcode), target_type.name().c_str());
           return 0;
         }
         bool null_succeeds = opcode == kExprRefTestNull;
@@ -6319,6 +6441,18 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
                           target_type.name().c_str(), src_type.name().c_str());
         return 0;
       }
+    }
+    if (!VALIDATE(!IsSubtypeOf(src_type, kWasmContRef, this->module_))) {
+      this->DecodeError(
+          "Invalid type for %s: may not cast %s continuation type",
+          WasmOpcodes::OpcodeName(opcode), src_type.name().c_str());
+      return 0;
+    }
+    if (!VALIDATE(!IsSubtypeOf(target_type, kWasmContRef, this->module_))) {
+      this->DecodeError(
+          "Invalid type for %s: may not cast %s to continuation type",
+          WasmOpcodes::OpcodeName(opcode), src_type.name().c_str());
+      return 0;
     }
 
     Value descriptor{nullptr, kWasmVoid};
@@ -7452,8 +7586,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
 #undef ASMJS_CASE
       {
         // Deal with special asmjs opcodes.
-        if (!VALIDATE(is_asmjs_module(this->module_)))
-          break;
+        if (!VALIDATE(is_asmjs_module(this->module_))) break;
         const FunctionSig* asmJsSig = WasmOpcodes::AsmjsSignature(opcode);
         DCHECK_NOT_NULL(asmJsSig);
         BuildSimpleOperator(opcode, asmJsSig);
@@ -7643,7 +7776,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
     // spec doesn't say this explicitly yet, but it's consistent with the rest
     // of Wasm. (Of course such inputs will trap at runtime.) See:
     // https://github.com/WebAssembly/stringref/issues/66
-    if (array.type.is_reference_to(HeapType::kNone)) return array;
+    if (array.type.is_reference_to(GenericKind::kNone)) return array;
     if (VALIDATE(array.type.is_object_reference() && array.type.has_index())) {
       ModuleTypeIndex ref_index = array.type.ref_index();
       if (VALIDATE(this->module_->has_array(ref_index))) {

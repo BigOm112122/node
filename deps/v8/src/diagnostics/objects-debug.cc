@@ -102,6 +102,7 @@
 #if V8_ENABLE_WEBASSEMBLY
 #include "src/base/strings.h"
 #include "src/debug/debug-wasm-objects-inl.h"
+#include "src/wasm/canonical-types.h"
 #include "src/wasm/wasm-objects-inl.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -295,6 +296,10 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       break;
     case WASM_DISPATCH_TABLE_TYPE:
       TrustedCast<WasmDispatchTable>(*this)->WasmDispatchTableVerify(isolate);
+      break;
+    case WASM_DISPATCH_TABLE_FOR_IMPORTS_TYPE:
+      TrustedCast<WasmDispatchTableForImports>(*this)
+          ->WasmDispatchTableForImportsVerify(isolate);
       break;
     case WASM_VALUE_OBJECT_TYPE:
       Cast<WasmValueObject>(*this)->WasmValueObjectVerify(isolate);
@@ -708,6 +713,23 @@ void Map::MapVerify(Isolate* isolate) {
     if (HeapLayout::InAnySharedSpace(*this)) {
       CHECK_EQ(map(), GetReadOnlyRoots().meta_map());
     }
+    // Wasm maps must have a WasmTypeInfo, which must contain all of their
+    // supertype maps.
+    CHECK(IsWasmTypeInfo(wasm_type_info()));
+    wasm::CanonicalTypeIndex index = wasm_type_info()->type_index();
+    wasm::TypeCanonicalizer* types = wasm::GetTypeCanonicalizer();
+    uint8_t subtyping_depth = types->GetSubtypingDepth_Slow(index);
+    CHECK_GE(wasm_type_info()->supertypes_length(), subtyping_depth);
+    // Wasm maps with custom descriptors additionally cache their immediate
+    // supertype.
+    // Note: for each static type that has a descriptor, there is also a
+    // canonical RTT that does not have one (and is not used by any actual
+    // objects).
+    if (types->has_descriptor(index) && IsWasmStruct(custom_descriptor())) {
+      CHECK_GT(wasm_type_info()->supertypes_length(), subtyping_depth);
+      CHECK_EQ(immediate_supertype_map(),
+               wasm_type_info()->supertypes(subtyping_depth));
+    }
   }
 #endif
 
@@ -881,7 +903,7 @@ void FeedbackCell::FeedbackCellVerify(Isolate* isolate) {
   JSDispatchTable* jdt = IsolateGroup::current()->js_dispatch_table();
   Tagged<Code> code = jdt->GetCode(handle);
   CodeKind kind = code->kind();
-  CHECK(kind == CodeKind::FOR_TESTING || kind == CodeKind::BUILTIN ||
+  CHECK(kind == CodeKind::FOR_TESTING_JS || kind == CodeKind::BUILTIN ||
         kind == CodeKind::INTERPRETED_FUNCTION || kind == CodeKind::BASELINE ||
         kind == CodeKind::MAGLEV || kind == CodeKind::TURBOFAN_JS);
 #endif
@@ -975,9 +997,9 @@ void TrustedByteArray::TrustedByteArrayVerify(Isolate* isolate) {
 void FixedDoubleArray::FixedDoubleArrayVerify(Isolate* isolate) {
   for (int i = 0; i < length(); i++) {
     if (!is_the_hole(i)
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
         && !is_undefined(i)
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
     ) {
       uint64_t value = get_representation(i);
       uint64_t unexpected =
@@ -2563,6 +2585,23 @@ void WasmDispatchTable::WasmDispatchTableVerify(Isolate* isolate) {
   }
 }
 
+void WasmDispatchTableForImports::WasmDispatchTableForImportsVerify(
+    Isolate* isolate) {
+  TrustedObjectVerify(isolate);
+
+  int len = length();
+  for (int i = 0; i < len; ++i) {
+    Tagged<Object> arg = implicit_arg(i);
+    Object::VerifyPointer(isolate, arg);
+    CHECK(IsWasmTrustedInstanceData(arg) || IsWasmImportData(arg) ||
+          arg == Smi::zero());
+    if (!v8_flags.wasm_jitless) {
+      // call_target always null with the interpreter.
+      CHECK_EQ(arg == Smi::zero(), target(i) == wasm::kInvalidWasmCodePointer);
+    }
+  }
+}
+
 void WasmTableObject::WasmTableObjectVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::WasmTableObjectVerify(*this, isolate);
   if (has_trusted_dispatch_table() &&
@@ -2807,9 +2846,9 @@ class StringTableVerifier : public RootVisitor {
                          FullObjectSlot start, FullObjectSlot end) override {
     UNREACHABLE();
   }
-  void VisitRootPointers(Root root, const char* description,
-                         OffHeapObjectSlot start,
-                         OffHeapObjectSlot end) override {
+  void VisitCompressedRootPointers(Root root, const char* description,
+                                   OffHeapObjectSlot start,
+                                   OffHeapObjectSlot end) override {
     // Visit all HeapObject pointers in [start, end).
     for (OffHeapObjectSlot p = start; p < end; ++p) {
       Tagged<Object> o = p.load(isolate_);

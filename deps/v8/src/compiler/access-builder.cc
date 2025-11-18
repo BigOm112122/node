@@ -4,6 +4,8 @@
 
 #include "src/compiler/access-builder.h"
 
+#include "src/codegen/machine-type.h"
+#include "src/compiler/property-access-builder.h"
 #include "src/compiler/type-cache.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/arguments.h"
@@ -151,10 +153,10 @@ FieldAccess AccessBuilder::ForJSObjectPropertiesOrHash() {
 // static
 FieldAccess AccessBuilder::ForJSObjectPropertiesOrHashKnownPointer() {
   FieldAccess access = {
-      kTaggedBase,          JSObject::kPropertiesOrHashOffset,
-      MaybeHandle<Name>(),  OptionalMapRef(),
-      Type::Any(),          MachineType::TaggedPointer(),
-      kPointerWriteBarrier, "JSObjectPropertiesOrHashKnownPointer"};
+      kTaggedBase,         JSObject::kPropertiesOrHashOffset,
+      MaybeHandle<Name>(), OptionalMapRef(),
+      Type::Any(),         MachineType::AnyTagged(),
+      kFullWriteBarrier,   "JSObjectPropertiesOrHashKnownPointer"};
   return access;
 }
 
@@ -233,7 +235,7 @@ FieldAccess AccessBuilder::ForJSExternalObjectValue() {
       "JSExternalObjectValue",
       ConstFieldInfo::None(),
       false,
-      kExternalObjectValueTag,
+      kFastApiExternalTypeTag,
   };
   return access;
 }
@@ -1097,12 +1099,16 @@ FieldAccess AccessBuilder::ForFeedbackVectorSlot(int index) {
 }
 
 // static
-FieldAccess AccessBuilder::ForPropertyArraySlot(int index) {
+FieldAccess AccessBuilder::ForPropertyArraySlot(int index,
+                                                Representation representation) {
   int offset = PropertyArray::OffsetOfElementAt(index);
-  FieldAccess access = {kTaggedBase,       offset,
-                        Handle<Name>(),    OptionalMapRef(),
-                        Type::Any(),       MachineType::AnyTagged(),
-                        kFullWriteBarrier, "PropertyArraySlot"};
+  MachineType machine_type =
+      representation.IsHeapObject() || representation.IsDouble()
+          ? MachineType::TaggedPointer()
+          : MachineType::AnyTagged();
+  FieldAccess access = {
+      kTaggedBase, offset,       Handle<Name>(),    OptionalMapRef(),
+      Type::Any(), machine_type, kFullWriteBarrier, "PropertyArraySlot"};
   return access;
 }
 
@@ -1218,11 +1224,11 @@ ElementAccess AccessBuilder::ForFixedArrayElement(ElementsKind kind) {
       access.machine_type = MachineType::Float64();
       break;
     case HOLEY_DOUBLE_ELEMENTS:
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
       access.type = Type::NumberOrUndefinedOrHole();
 #else
       access.type = Type::NumberOrHole();
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
       access.write_barrier_kind = kNoWriteBarrier;
       access.machine_type = MachineType::Float64();
       break;

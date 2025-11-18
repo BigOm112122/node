@@ -2517,7 +2517,9 @@ IGNITION_HANDLER(SwitchOnSmiNoFeedback, InterpreterAssembler) {
   GotoIf(IntPtrGreaterThanOrEqual(case_value, table_length), &fall_through);
 
   TNode<WordT> entry = IntPtrAdd(table_start, case_value);
-  TNode<IntPtrT> relative_jump = LoadAndUntagConstantPoolEntry(entry);
+  TNode<Object> constant_entry = LoadConstantPoolEntry(entry);
+  CSA_SBXCHECK(this, TaggedIsSmi(constant_entry));
+  TNode<IntPtrT> relative_jump = SmiUntag(CAST(constant_entry));
   Jump(relative_jump);
 
   BIND(&fall_through);
@@ -2724,13 +2726,27 @@ IGNITION_HANDLER(CreateEmptyObjectLiteral, InterpreterAssembler) {
 IGNITION_HANDLER(SetPrototypeProperties, InterpreterLoadGlobalAssembler) {
   TNode<Object> object = GetAccumulator();
   TNode<Context> context = GetContext();
-
   TNode<ObjectBoilerplateDescription> proto_boilerplate_description =
       CAST(LoadConstantPoolEntryAtOperandIndex(0));
+  TNode<Smi> start_slot = BytecodeOperandIdxSmi(1);
 
-  TNode<Object> result = CallRuntime(Runtime::kSetPrototypeProperties, context,
-                                     object, proto_boilerplate_description);
+  TNode<ClosureFeedbackCellArray> feedback_cell_array =
+      LoadClosureFeedbackArray(LoadFunctionClosure());
 
+  TNode<Object> result =
+      CallRuntime(Runtime::kSetPrototypeProperties, context,
+                  // The object (in accumulator) upon whose prototype
+                  // boilerplate shall be applied
+                  object,
+                  // ObjectBoilerplateDescription whose properties will be
+                  // merged in to the above object
+                  proto_boilerplate_description,
+                  // Array of feedback cells. Needed to instantiate
+                  // ShareFunctionInfo(s) from the boilerplate
+                  feedback_cell_array,
+                  // Index of the feedback cell of the first ShareFunctionInfo.
+                  // We may assume all other SFI to be tightly packed.
+                  start_slot);
   ClobberAccumulator(result);
 
   Dispatch();
@@ -3305,6 +3321,12 @@ IGNITION_HANDLER(ForOfNext, InterpreterAssembler) {
 
   auto [value, done_value] = ForOfNextHelper(context, object, next);
   StoreRegisterPairAtOperandIndex(value, done_value, 2);
+  // To avoid special logic in the deoptimizer to re-materialize the value in
+  // the accumulator, we clobber the accumulator after the iterator.next call.
+  // It doesn't really matter what we write to the accumulator here, since we
+  // restore to the correct value on the outside. Storing the result means we
+  // don't need to keep unnecessary state alive across the callstub.
+  ClobberAccumulator(value);
   Dispatch();
 }
 
@@ -3417,7 +3439,9 @@ IGNITION_HANDLER(SwitchOnGeneratorState, InterpreterAssembler) {
   USE(table_length);  // SBXCHECK is a DCHECK when the sandbox is disabled.
 
   TNode<WordT> entry = IntPtrAdd(table_start, case_value);
-  TNode<IntPtrT> relative_jump = LoadAndUntagConstantPoolEntry(entry);
+  TNode<Object> constant_entry = LoadConstantPoolEntry(entry);
+  CSA_SBXCHECK(this, TaggedIsSmi(constant_entry));
+  TNode<IntPtrT> relative_jump = SmiUntag(CAST(constant_entry));
   Jump(relative_jump);
 
   BIND(&fallthrough);

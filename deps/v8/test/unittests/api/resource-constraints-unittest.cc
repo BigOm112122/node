@@ -23,8 +23,7 @@ TEST(ResourceConstraints, ConfigureDefaultsFromHeapSizeSmall) {
 
 TEST(ResourceConstraints, ConfigureDefaultsFromHeapSizeLarge) {
   const uint64_t physical_memory = 0;
-  const size_t pm = Heap::kPointerMultiplier;
-  const size_t heap_max_size = Heap::DefaulMaxHeapSize(physical_memory);
+  const size_t heap_max_size = Heap::DefaultMaxHeapSize(physical_memory);
   v8::ResourceConstraints constraints;
   const size_t expected_young_gen_max_size =
       Heap::DefaultMaxSemiSpaceSize(physical_memory) *
@@ -40,15 +39,15 @@ TEST(ResourceConstraints, ConfigureDefaultsFromHeapSizeLarge) {
   // Check that for small initial heap sizes initial semi space size is set to
   // the minimum supported capacity (i.e. 1MB with pointer compression and 512KB
   // without).
-  ASSERT_EQ((internal::v8_flags.minor_ms ? 2 : 3) * 512 * pm * KB,
+  ASSERT_EQ((internal::v8_flags.minor_ms ? 2 : 3) * 512u * KB,
             constraints.initial_young_generation_size_in_bytes());
-  ASSERT_EQ(50u * MB - (internal::v8_flags.minor_ms ? 2 : 3) * 512 * pm * KB,
+  ASSERT_EQ(50u * MB - (internal::v8_flags.minor_ms ? 2 : 3) * 512 * KB,
             constraints.initial_old_generation_size_in_bytes());
 }
 
 TEST(ResourceConstraints, ConfigureDefaults) {
   const uint64_t physical_memory = 2u * GB;
-  const size_t heap_max_size = Heap::DefaulMaxHeapSize(physical_memory);
+  const size_t heap_max_size = Heap::DefaultMaxHeapSize(physical_memory);
   v8::ResourceConstraints constraints;
   constraints.ConfigureDefaults(2u * GB, 0u);
   ASSERT_EQ(heap_max_size / 2, constraints.max_old_generation_size_in_bytes());

@@ -141,8 +141,8 @@ const char* ComputeMarker(Tagged<SharedFunctionInfo> shared,
       kind == CodeKind::INTERPRETED_FUNCTION) {
     return "";
   }
-  return CodeKindToMarker(
-      kind, IsCode(code) && code->GetCode()->is_context_specialized());
+  return CodeKindToMarker(kind, code->is_context_specialized(cage_base),
+                          code->osr_offset(cage_base));
 }
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -337,7 +337,7 @@ void CodeEventLogger::RegExpCodeCreateEvent(DirectHandle<AbstractCode> code,
   // regexp patterns.
   name_buffer_->Reset();
   // https://github.com/google/pprof/blob/4cf4322d492d108a9d6526d10844e04792982cbb/internal/symbolizer/symbolizer.go#L312.
-  name_buffer_->AppendBytes("RegExp.>");
+  name_buffer_->AppendBytes("RegExp.<");
   name_buffer_->AppendBytes(" src: '");
   name_buffer_->AppendString(*source);
   name_buffer_->AppendBytes("' flags: '");
@@ -2548,7 +2548,11 @@ void ExistingCodeLogger::LogCodeObject(Tagged<AbstractCode> object) {
     case CodeKind::MAGLEV:
       return;  // We log this later using LogCompiledFunctions.
     case CodeKind::FOR_TESTING:
-      description = "STUB code";
+      description = "Test Code with stub linkage";
+      tag = CodeTag::kStub;
+      break;
+    case CodeKind::FOR_TESTING_JS:
+      description = "Test Code with JS linkage";
       tag = CodeTag::kStub;
       break;
     case CodeKind::REGEXP:

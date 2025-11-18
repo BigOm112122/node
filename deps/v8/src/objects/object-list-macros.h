@@ -96,6 +96,7 @@ namespace internal {
   V(WeakFixedArray)                           \
   IF_WASM(V, WasmArray)                       \
   IF_WASM(V, WasmDispatchTable)               \
+  IF_WASM(V, WasmDispatchTableForImports)     \
   IF_WASM(V, WasmStruct)
 
 // TODO(jgruber): Move more types to SIMPLE_HEAP_OBJECT_LIST_GENERATOR.
@@ -273,7 +274,6 @@ namespace internal {
   IF_WASM(V, WasmObject)                        \
   IF_WASM(V, WasmResumeData)                    \
   IF_WASM(V, WasmStruct)                        \
-  IF_WASM(V, WasmDescriptorOptions)             \
   IF_WASM(V, WasmSuspendingObject)              \
   IF_WASM(V, WasmContinuationObject)            \
   IF_WASM(V, WasmTableObject)                   \
@@ -389,6 +389,8 @@ namespace internal {
   IF_WASM(APPLY, V, WasmImportData, WASM_IMPORT_DATA)                          \
   IF_WASM(APPLY, V, WasmCapiFunctionData, WASM_CAPI_FUNCTION_DATA)             \
   IF_WASM(APPLY, V, WasmDispatchTable, WASM_DISPATCH_TABLE)                    \
+  IF_WASM(APPLY, V, WasmDispatchTableForImports,                               \
+          WASM_DISPATCH_TABLE_FOR_IMPORTS)                                     \
   IF_WASM(APPLY, V, WasmExportedFunctionData, WASM_EXPORTED_FUNCTION_DATA)     \
   IF_WASM(APPLY, V, WasmJSFunctionData, WASM_JS_FUNCTION_DATA)                 \
   IF_WASM(APPLY, V, WasmInternalFunction, WASM_INTERNAL_FUNCTION)              \

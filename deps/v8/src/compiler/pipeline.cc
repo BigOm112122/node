@@ -2291,7 +2291,8 @@ CodeAssemblerCompilationJob::CodeAssemblerCompilationJob(
       finalize_order_(finalize_order) {
   DCHECK(code_kind == CodeKind::BUILTIN ||
          code_kind == CodeKind::BYTECODE_HANDLER ||
-         code_kind == CodeKind::FOR_TESTING);
+         code_kind == CodeKind::FOR_TESTING ||
+         code_kind == CodeKind::FOR_TESTING_JS);
   compilation_info_.set_builtin(builtin);
 }
 
@@ -2786,6 +2787,36 @@ MaybeHandle<Code> Pipeline::GenerateCodeForTurboshaftBuiltin(
   return turboshaft_pipeline.FinalizeCode();
 }
 
+MaybeHandle<Code> Pipeline::GenerateCodeForTesting(
+    turboshaft::PipelineData* turboshaft_data, CallDescriptor* call_descriptor,
+    const char* debug_name) {
+  Isolate* isolate = turboshaft_data->isolate();
+
+  PipelineJobScope scope(turboshaft_data,
+                         isolate->counters()->runtime_call_stats());
+  RCS_SCOPE(isolate, RuntimeCallCounterId::kOptimizeCode);
+
+  std::unique_ptr<TurbofanPipelineStatistics> pipeline_statistics(
+      CreatePipelineStatistics(Handle<Script>::null(), turboshaft_data->info(),
+                               isolate, turboshaft_data->zone_stats()));
+
+  turboshaft::BuiltinPipeline turboshaft_pipeline(turboshaft_data);
+  OptimizedCompilationInfo* info = turboshaft_data->info();
+  if (info->trace_turbo_graph() || info->trace_turbo_json()) {
+    turboshaft::ZoneWithName<turboshaft::kTempZoneName> print_zone(
+        turboshaft_data->zone_stats(), turboshaft::kTempZoneName);
+    std::string name_buffer = "Testing: ";
+    name_buffer += debug_name;
+    turboshaft_pipeline.PrintGraph(print_zone, name_buffer.c_str());
+  }
+
+  turboshaft_pipeline.OptimizeBuiltin();
+
+  Linkage linkage(call_descriptor);
+  CHECK(turboshaft_pipeline.GenerateCode(&linkage, {}, nullptr, nullptr, 0));
+  return turboshaft_pipeline.FinalizeCode();
+}
+
 #if V8_ENABLE_WEBASSEMBLY
 
 namespace {
@@ -3040,7 +3071,8 @@ base::OwnedVector<uint8_t> SerializeInliningPositions(
 // static
 wasm::WasmCompilationResult Pipeline::GenerateWasmCode(
     wasm::CompilationEnv* env, WasmCompilationData& compilation_data,
-    wasm::WasmDetectedFeatures* detected, Counters* counters) {
+    wasm::WasmDetectedFeatures* detected,
+    DelayedCounterUpdates* counter_updates) {
   auto* wasm_engine = wasm::GetWasmEngine();
   const wasm::WasmModule* module = env->module;
   base::TimeTicks start_time;
@@ -3262,6 +3294,7 @@ wasm::WasmCompilationResult Pipeline::GenerateWasmCode(
       code_generator->GetProtectedInstructionsData();
   result.deopt_data = code_generator->GenerateWasmDeoptimizationData();
   result.result_tier = wasm::ExecutionTier::kTurbofan;
+  result.effect_handlers = code_generator->GenerateWasmEffectHandler();
 
   if (data.info()->trace_turbo_json()) {
     TurboJsonFile json_of(data.info(), std::ios_base::app);
@@ -3309,9 +3342,10 @@ wasm::WasmCompilationResult Pipeline::GenerateWasmCode(
                    << std::endl;
   }
 
-  if (counters && compilation_data.body_size() >= 100 * KB) {
+  if (compilation_data.body_size() >= 100 * KB) {
     size_t zone_bytes = zone_stats.GetMaxAllocatedBytes();
-    counters->wasm_compile_huge_function_peak_memory_bytes()->AddSample(
+    counter_updates->AddSample(
+        &Counters::wasm_compile_huge_function_peak_memory_bytes,
         static_cast<int>(std::min(size_t{kMaxInt}, zone_bytes)));
   }
 
@@ -3319,7 +3353,7 @@ wasm::WasmCompilationResult Pipeline::GenerateWasmCode(
   // any deopt data. This indicates a baseline of how many functions can
   // potentially deopt, so that the statistics of having x functions that
   // deopted at least once becomes more meaningful.
-  if (counters && !result.deopt_data.empty()) {
+  if (!result.deopt_data.empty()) {
     DCHECK(v8_flags.wasm_deopt);
     bool is_first_tierup = false;
     {
@@ -3329,7 +3363,7 @@ wasm::WasmCompilationResult Pipeline::GenerateWasmCode(
           compilation_data.func_index);
     }
     if (is_first_tierup) {
-      counters->wasm_deopts_per_function()->AddSample(0);
+      counter_updates->AddSample(&Counters::wasm_deopts_per_function, 0);
     }
   }
 

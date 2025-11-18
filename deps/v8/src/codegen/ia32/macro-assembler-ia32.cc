@@ -553,6 +553,25 @@ void MacroAssembler::RecordWrite(Register object, Register slot_address,
   }
 }
 
+void MacroAssembler::CallVerifySkippedWriteBarrierStubSaveRegisters(
+    Register object, Register value, SaveFPRegsMode fp_mode) {
+  ASM_CODE_COMMENT(this);
+  PushCallerSaved(fp_mode);
+  CallVerifySkippedWriteBarrierStub(object, value);
+  PopCallerSaved(fp_mode);
+}
+
+void MacroAssembler::CallVerifySkippedWriteBarrierStub(Register object,
+                                                       Register value) {
+  ASM_CODE_COMMENT(this);
+  movd(kScratchDoubleReg, eax);
+  PrepareCallCFunction(2, eax);
+  movd(eax, kScratchDoubleReg);
+  mov(Operand(esp, 0 * kSystemPointerSize), object);
+  mov(Operand(esp, 1 * kSystemPointerSize), value);
+  CallCFunction(ExternalReference::verify_skipped_write_barrier(), 2);
+}
+
 void MacroAssembler::Cvtsi2ss(XMMRegister dst, Operand src) {
   xorps(dst, dst);
   cvtsi2ss(dst, src);
@@ -2293,6 +2312,50 @@ void MacroAssembler::CheckPageFlag(Register object, Register scratch, int mask,
   j(cc, condition_met, condition_met_distance);
 }
 
+void MacroAssembler::PreCheckSkippedWriteBarrier(Register object,
+                                                 Register value,
+                                                 Register scratch, Label* ok) {
+  ASM_CODE_COMMENT(this);
+  DCHECK(!AreAliased(object, scratch));
+  DCHECK(!AreAliased(value, scratch));
+
+  // The most common case: Static write barrier elimination is allowed on the
+  // last young allocation.
+  lea(scratch, Operand(object, -kHeapObjectTag));
+  cmp(scratch,
+      Operand(kRootRegister, IsolateData::last_young_allocation_offset()));
+  j(Condition::equal, ok);
+
+  // Write barier can also be removed if value is in read-only space.
+  CheckPageFlag(value, scratch, MemoryChunk::kIsInReadOnlyHeapMask, not_zero,
+                ok);
+
+  Label not_ok;
+
+  // Handle allocation folding, allow WB removal if:
+  //   LAB start <= last_young_allocation_ < (object address+1) < LAB top
+  // Note that object has tag bit set, so object == object address+1.
+
+  // Check LAB start <= last_young_allocation_.
+  mov(scratch,
+      Operand(kRootRegister, IsolateData::last_young_allocation_offset()));
+  cmp(scratch,
+      Operand(kRootRegister, IsolateData::new_allocation_info_start_offset()));
+  j(Condition::kUnsignedLessThan, &not_ok);
+
+  // Check last_young_allocation_ < (object address+1).
+  cmp(scratch, object);
+  j(Condition::kUnsignedGreaterThanEqual, &not_ok);
+
+  // Check (object address+1) < LAB top.
+  cmp(object,
+      Operand(kRootRegister, IsolateData::new_allocation_info_top_offset()));
+  j(Condition::kUnsignedLessThan, ok);
+
+  // Slow path: Potentially check more cases in C++.
+  bind(&not_ok);
+}
+
 void MacroAssembler::ComputeCodeStartAddress(Register dst) {
   ASM_CODE_COMMENT(this);
   // In order to get the address of the current instruction, we first need
@@ -2442,9 +2505,10 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, bool with_profiling,
 
   if (argc_operand == nullptr) {
     DCHECK_NE(slots_to_drop_on_return, 0);
-    __ ret(slots_to_drop_on_return * kSystemPointerSize);
+    __ Ret(slots_to_drop_on_return * kSystemPointerSize, scratch);
+
   } else {
-    __ pop(scratch);
+    __ PopReturnAddressTo(scratch);
     // {argc_operand} was loaded into {argc_reg} above.
     __ lea(esp, Operand(esp, argc_reg, times_system_pointer_size,
                         slots_to_drop_on_return * kSystemPointerSize));

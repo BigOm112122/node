@@ -969,6 +969,7 @@ class Context(object):
     self.abort_on_timeout = abort_on_timeout
     self.v8_enable_inspector = True
     self.node_has_crypto = True
+    self.use_error_reporter = False
 
   def GetVm(self, arch, mode):
     if self.vm is not None:
@@ -1461,7 +1462,7 @@ def BuildOptions():
       help="Type of build (simple, fips, coverage)",
       default=None)
   result.add_argument("--error-reporter",
-      help="use error reporter",
+      help="use error reporter if the test uses node:test",
       default=True, action="store_true")
   return result
 
@@ -1679,10 +1680,6 @@ def Main():
     options.node_args.append("--trace-file-names")
     options.progress = "deopts"
 
-  if options.error_reporter:
-    options.node_args.append('--test-reporter=./test/common/test-error-reporter.js')
-    options.node_args.append('--test-reporter-destination=stdout')
-
   if options.worker:
     run_worker = join(workspace, "tools", "run-worker.js")
     options.node_args.append(run_worker)
@@ -1701,6 +1698,9 @@ def Main():
                     options.repeat,
                     options.abort_on_timeout)
 
+  if options.error_reporter:
+    context.use_error_reporter = True
+
   # Get status for tests
   sections = [ ]
   defs = { }
@@ -1712,27 +1712,28 @@ def Main():
   all_unused = [ ]
   unclassified_tests = [ ]
   globally_unused_rules = None
-  for path in paths:
-    for arch in options.arch:
-      for mode in options.mode:
-        vm = context.GetVm(arch, mode)
-        if not exists(vm):
-          print("Can't find shell executable: '%s'" % vm)
-          continue
-        archEngineContext = Execute([vm, "-p", "process.arch"], context)
-        vmArch = archEngineContext.stdout.rstrip()
-        if archEngineContext.exit_code != 0 or vmArch == "undefined":
-          print("Can't determine the arch of: '%s'" % vm)
-          print(archEngineContext.stderr.rstrip())
-          continue
-        env = {
-          'mode': mode,
-          'system': utils.GuessOS(),
-          'arch': vmArch,
-          'type': get_env_type(vm, options.type, context),
-          'asan': get_asan_state(vm, context),
-          'pointer_compression': get_pointer_compression_state(vm, context),
-        }
+
+  for arch in options.arch:
+    for mode in options.mode:
+      vm = context.GetVm(arch, mode)
+      if not exists(vm):
+        print("Can't find shell executable: '%s'" % vm)
+        continue
+      archEngineContext = Execute([vm, "-p", "process.arch"], context)
+      vmArch = archEngineContext.stdout.rstrip()
+      if archEngineContext.exit_code != 0 or vmArch == "undefined":
+        print("Can't determine the arch of: '%s'" % vm)
+        print(archEngineContext.stderr.rstrip())
+        continue
+      env = {
+        'mode': mode,
+        'system': utils.GuessOS(),
+        'arch': vmArch,
+        'type': get_env_type(vm, options.type, context),
+        'asan': get_asan_state(vm, context),
+        'pointer_compression': get_pointer_compression_state(vm, context),
+      }
+      for path in paths:
         test_list = root.ListTests([], path, context, arch, mode)
         unclassified_tests += test_list
         cases, unused_rules = config.ClassifyTests(test_list, env)

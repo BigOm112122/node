@@ -1261,7 +1261,7 @@ Type Typer::Visitor::TypeJSWasmCall(Node* node) {
   DCHECK_EQ(1, func->sig->return_count());
   wasm::ValueType return_type = func->sig->GetReturn();
   DCHECK_IMPLIES(return_type.is_ref(),
-                 return_type.is_reference_to(wasm::HeapType::kExtern));
+                 return_type.is_reference_to(wasm::GenericKind::kExtern));
   return JSWasmCallNode::TypeForWasmReturnKind(return_type.kind());
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -1720,6 +1720,8 @@ Type Typer::Visitor::Weaken(Node* node, Type current_type, Type previous_type) {
                      Type::Range(new_min, new_max, typer_->zone()),
                      typer_->zone());
 }
+
+Type Typer::Visitor::TypeJSSetPrototypeProperties(Node* node) { UNREACHABLE(); }
 
 Type Typer::Visitor::TypeJSSetKeyedProperty(Node* node) { UNREACHABLE(); }
 
@@ -2516,12 +2518,12 @@ Type Typer::Visitor::TypeChangeFloat64HoleToTagged(Node* node) {
 }
 
 Type Typer::Visitor::TypeChangeFloat64OrUndefinedOrHoleToTagged(Node* node) {
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
   Type arg = Operand(node, 0);
   return Type::Intersect(arg, Type::NumberOrUndefinedOrHole(), zone());
 #else
   UNREACHABLE();
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
 }
 
 Type Typer::Visitor::TypeCheckNotTaggedHole(Node* node) {

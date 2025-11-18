@@ -224,7 +224,12 @@ V8_OBJECT class FixedArray
  public:
   template <class IsolateT>
   static inline Handle<FixedArray> New(
-      IsolateT* isolate, int capacity,
+      IsolateT* isolate, int length,
+      AllocationType allocation = AllocationType::kYoung,
+      AllocationHint hint = AllocationHint());
+  template <class IsolateT, typename ElementsCallback>
+  static inline Handle<FixedArray> New(
+      IsolateT* isolate, int length, ElementsCallback elements_callback,
       AllocationType allocation = AllocationType::kYoung,
       AllocationHint hint = AllocationHint());
 
@@ -463,7 +468,11 @@ V8_OBJECT class FixedDoubleArray
   // empty_fixed_array.
   template <class IsolateT>
   static inline Handle<FixedArrayBase> New(
-      IsolateT* isolate, int capacity,
+      IsolateT* isolate, int length,
+      AllocationType allocation = AllocationType::kYoung);
+  template <class IsolateT, typename ElementsCallback>
+  static inline Handle<FixedArrayBase> New(
+      IsolateT* isolate, int length, ElementsCallback elements_callback,
       AllocationType allocation = AllocationType::kYoung);
 
   // Setter and getter for elements.
@@ -472,10 +481,10 @@ V8_OBJECT class FixedDoubleArray
   static inline Handle<Object> get(Tagged<FixedDoubleArray> array, int index,
                                    Isolate* isolate);
   inline void set(int index, double value);
-#ifdef V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
   inline void set_undefined(int index);
   inline bool is_undefined(int index);
-#endif  // V8_ENABLE_EXPERIMENTAL_UNDEFINED_DOUBLE
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
 
   inline void set_the_hole(Isolate* isolate, int index);
   inline void set_the_hole(int index);
